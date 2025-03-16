@@ -23,6 +23,10 @@ export class ProteinShader {
     // Handle context loss
     this.contextLost = false;
     
+    // Store context loss callback functions
+    this.onContextLostCallback = null;
+    this.onContextRestoredCallback = null;
+    
     // Bind context handlers
     this._bindContextHandlers();
     
@@ -40,12 +44,12 @@ export class ProteinShader {
     // Handle WebGL context loss
     this.renderer.domElement.addEventListener('webglcontextlost', (event) => {
       console.warn('WebGL context was lost in ProteinShader');
-      event.preventDefault();
+      event.preventDefault(); // This is critical for context restoration
       this.contextLost = true;
       
       // Notify that context is lost
-      if (this.onContextLost) {
-        this.onContextLost();
+      if (this.onContextLostCallback) {
+        this.onContextLostCallback();
       }
     }, false);
     
@@ -58,8 +62,8 @@ export class ProteinShader {
       this._initShader();
       
       // Notify that context is restored
-      if (this.onContextRestored) {
-        this.onContextRestored();
+      if (this.onContextRestoredCallback) {
+        this.onContextRestoredCallback();
       }
     }, false);
   }
@@ -101,9 +105,6 @@ export class ProteinShader {
         uniform float effectStrength;
         uniform float time;
         
-        attribute vec3 color;
-        
-        varying vec3 vColor;
         varying vec3 vNormal;
         varying vec3 vViewPosition;
       `,
@@ -111,9 +112,6 @@ export class ProteinShader {
       // Main vertex transformation
       main: `
         void main() {
-          // Pass color to fragment shader
-          vColor = color;
-          
           // Calculate view-space position and normal
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           vViewPosition = mvPosition.xyz;
@@ -132,7 +130,6 @@ export class ProteinShader {
         uniform float effectStrength;
         uniform float time;
         
-        varying vec3 vColor;
         varying vec3 vNormal;
         varying vec3 vViewPosition;
       `,
@@ -164,8 +161,8 @@ export class ProteinShader {
       standardMain: `
         void main() {
           vec3 normal = normalize(vNormal);
-          vec3 finalColor = calculateLighting(normal, vViewPosition, vColor);
-          gl_FragColor = vec4(finalColor, 1.0);
+          vec3 finalColor = calculateLighting(normal, vViewPosition, diffuse);
+          gl_FragColor = vec4(finalColor, opacity);
         }
       `,
       
@@ -188,14 +185,14 @@ export class ProteinShader {
           
           // Ambient light
           float ambientStrength = 0.3;
-          vec3 ambient = ambientStrength * vColor;
+          vec3 ambient = ambientStrength * diffuse;
           
           // Diffuse light
-          vec3 diffuse = intensity * vColor;
+          vec3 diffuseLight = intensity * diffuse;
           
           // Final color
-          vec3 finalColor = edge * (ambient + diffuse);
-          gl_FragColor = vec4(finalColor, 1.0);
+          vec3 finalColor = edge * (ambient + diffuseLight);
+          gl_FragColor = vec4(finalColor, opacity);
         }
       `,
       
@@ -206,7 +203,7 @@ export class ProteinShader {
           vec3 viewDir = normalize(-vViewPosition);
           
           // Base lighting
-          vec3 baseColor = calculateLighting(normal, vViewPosition, vColor);
+          vec3 baseColor = calculateLighting(normal, vViewPosition, diffuse);
           
           // Add glow effect (Fresnel-based edge glow)
           float fresnel = pow(1.0 - max(dot(viewDir, normal), 0.0), 3.0) * effectStrength;
@@ -217,7 +214,7 @@ export class ProteinShader {
           
           // Apply glow
           vec3 finalColor = baseColor + glowColor * fresnel * pulse;
-          gl_FragColor = vec4(finalColor, 1.0);
+          gl_FragColor = vec4(finalColor, opacity);
         }
       `,
       
@@ -228,7 +225,7 @@ export class ProteinShader {
           vec3 viewDir = normalize(-vViewPosition);
           
           // Base lighting
-          vec3 baseColor = calculateLighting(normal, vViewPosition, vColor);
+          vec3 baseColor = calculateLighting(normal, vViewPosition, diffuse);
           
           // Create outline based on view angle
           float edgeFactor = abs(dot(viewDir, normal));
@@ -239,7 +236,7 @@ export class ProteinShader {
           vec3 outlineColor = vec3(0.0, 0.0, 0.0); // Black outline
           vec3 finalColor = mix(outlineColor, baseColor, outline);
           
-          gl_FragColor = vec4(finalColor, 1.0);
+          gl_FragColor = vec4(finalColor, opacity);
         }
       `
     };
@@ -276,6 +273,9 @@ export class ProteinShader {
     
     // Fragment shader
     const fragmentShader = `
+      uniform vec3 diffuse;
+      uniform float opacity;
+      
       ${this.fragmentShaderParts.common}
       
       ${this.fragmentShaderParts.lighting}
@@ -330,34 +330,27 @@ export class ProteinShader {
         return material;
       }
       
-      // For other shaders, create a custom ShaderMaterial
-      const shader = this._createShader();
-      
-      // Create uniforms
-      const uniforms = {
-        ...THREE.UniformsLib.lights,
-        effectStrength: { value: 1.0 },
-        time: { value: 0.0 },
-        diffuse: { value: options.color || new THREE.Color(0xffffff) },
-        opacity: { value: options.opacity !== undefined ? options.opacity : 1.0 }
-      };
-      
-      // Create material
-      const material = new THREE.ShaderMaterial({
-        uniforms: uniforms,
-        vertexShader: shader.vertexShader,
-        fragmentShader: shader.fragmentShader,
-        lights: true,
-        transparent: options.transparent || false,
+      // For other shaders, we'll use a simpler approach to avoid context issues
+      // Use standard material for most shaders
+      const material = new THREE.MeshStandardMaterial({
+        color: options.color || 0xffffff,
+        roughness: options.roughness !== undefined ? options.roughness : 0.5,
+        metalness: options.metalness !== undefined ? options.metalness : 0.5,
+        transparent: options.transparent !== undefined ? options.transparent : false,
+        opacity: options.opacity !== undefined ? options.opacity : 1.0,
         side: options.side || THREE.FrontSide
       });
       
-      // Add update method for animations
-      material.update = (time) => {
-        if (material.uniforms.time) {
-          material.uniforms.time.value = time;
-        }
-      };
+      // Apply type-specific adjustments
+      if (this.type === 'glow') {
+        material.emissive = options.color || new THREE.Color(0xffffff);
+        material.emissiveIntensity = 0.3;
+      } else if (this.type === 'outline') {
+        material.userData.isOutline = true;
+      }
+      
+      // Store effect strength in userData
+      material.userData.effectStrength = 1.0;
       
       return material;
     } catch (error) {
@@ -391,10 +384,14 @@ export class ProteinShader {
       if (material.isMeshToonMaterial) {
         // Store effect strength in userData
         material.userData.effectStrength = clampedStrength;
-      } else if (material.isShaderMaterial && material.uniforms) {
-        // Update uniform directly
-        if (material.uniforms.effectStrength) {
-          material.uniforms.effectStrength.value = clampedStrength;
+      } else if (material.isMeshStandardMaterial) {
+        // Store effect strength in userData
+        material.userData.effectStrength = clampedStrength;
+        
+        // Apply type-specific adjustments
+        if (this.type === 'glow' && material.emissiveIntensity !== undefined) {
+          material.emissiveIntensity = 0.1 + clampedStrength * 0.5;
+          material.needsUpdate = true;
         }
       }
     } catch (error) {
@@ -418,7 +415,7 @@ export class ProteinShader {
    * @param {Function} callback - Function to call when context is lost
    */
   onLost(callback) {
-    this.onContextLost = callback;
+    this.onContextLostCallback = callback;
   }
   
   /**
@@ -426,7 +423,7 @@ export class ProteinShader {
    * @param {Function} callback - Function to call when context is restored
    */
   onRestored(callback) {
-    this.onContextRestored = callback;
+    this.onContextRestoredCallback = callback;
   }
   
   /**
