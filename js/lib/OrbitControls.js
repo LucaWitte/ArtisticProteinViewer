@@ -78,10 +78,10 @@ class OrbitControls extends THREE.EventDispatcher {
 		this.keys = { LEFT: 'ArrowLeft', UP: 'ArrowUp', RIGHT: 'ArrowRight', BOTTOM: 'ArrowDown' };
 
 		// Mouse buttons
-		this.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+		this.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.PAN };
 
 		// Touch fingers
-		this.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+		this.touches = { ONE: TOUCH.ROTATE, TWO: TOUCH.DOLLY_PAN };
 
 		// for reset
 		this.target0 = this.target.clone();
@@ -883,7 +883,7 @@ class OrbitControls extends THREE.EventDispatcher {
 
 			switch ( mouseAction ) {
 
-				case THREE.MOUSE.DOLLY:
+				case MOUSE.DOLLY:
 
 					if ( scope.enableZoom === false ) return;
 
@@ -893,7 +893,7 @@ class OrbitControls extends THREE.EventDispatcher {
 
 					break;
 
-				case THREE.MOUSE.ROTATE:
+				case MOUSE.ROTATE:
 
 					if ( event.ctrlKey || event.metaKey || event.shiftKey ) {
 
@@ -915,7 +915,7 @@ class OrbitControls extends THREE.EventDispatcher {
 
 					break;
 
-				case THREE.MOUSE.PAN:
+				case MOUSE.PAN:
 
 					if ( event.ctrlKey || event.metaKey || event.shiftKey ) {
 
@@ -1017,7 +1017,7 @@ class OrbitControls extends THREE.EventDispatcher {
 
 					switch ( scope.touches.ONE ) {
 
-						case THREE.TOUCH.ROTATE:
+						case TOUCH.ROTATE:
 
 							if ( scope.enableRotate === false ) return;
 
@@ -1027,7 +1027,7 @@ class OrbitControls extends THREE.EventDispatcher {
 
 							break;
 
-						case THREE.TOUCH.PAN:
+						case TOUCH.PAN:
 
 							if ( scope.enablePan === false ) return;
 
@@ -1049,7 +1049,7 @@ class OrbitControls extends THREE.EventDispatcher {
 
 					switch ( scope.touches.TWO ) {
 
-						case THREE.TOUCH.DOLLY_PAN:
+						case TOUCH.DOLLY_PAN:
 
 							if ( scope.enableZoom === false && scope.enablePan === false ) return;
 
@@ -1059,7 +1059,7 @@ class OrbitControls extends THREE.EventDispatcher {
 
 							break;
 
-						case THREE.TOUCH.DOLLY_ROTATE:
+						case TOUCH.DOLLY_ROTATE:
 
 							if ( scope.enableZoom === false && scope.enableRotate === false ) return;
 
