@@ -3,7 +3,7 @@
  * Generates and displays solvent-accessible surface or electron density isosurface
  */
 
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js';
+import * as THREE from 'three';
 import { MarchingCubes } from 'https://cdn.jsdelivr.net/npm/three@0.150.1/examples/jsm/objects/MarchingCubes.js';
 import { CONFIG } from '../config.js';
 
@@ -85,17 +85,20 @@ export class Surface {
         Math.min(gridSize, 64) : 
         Math.min(gridSize, 128);
       
+      // Create material for the surface
+      const surfaceMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        metalness: 0.0,
+        roughness: 0.5,
+        transparent: true,
+        opacity: 0.8,
+        side: THREE.DoubleSide
+      });
+      
       // Create marching cubes for the surface
       const marchingCubes = new MarchingCubes(
         limitedGridSize,
-        new THREE.MeshStandardMaterial({
-          color: 0xffffff,
-          metalness: 0.0,
-          roughness: 0.5,
-          transparent: true,
-          opacity: 0.8,
-          side: THREE.DoubleSide
-        }),
+        surfaceMaterial,
         false, // enableUvs
         false  // enableColors
       );
@@ -197,8 +200,15 @@ export class Surface {
     }
     
     // Generate the surface mesh
-    const surfaceGeometry = marchingCubes.generateGeometry();
-    surfaceGeometry.computeVertexNormals();
+    // In this version of Three.js, we should use the MarchingCubes object directly
+    // as it is now a Mesh instance itself in Three.js
+    
+    // Force update the isosurface
+    marchingCubes.isolation = this.isoValue;
+    marchingCubes.update();
+    
+    // Clone the geometry from the MarchingCubes object
+    const surfaceGeometry = marchingCubes.geometry.clone();
     
     // Fix geometry position
     const positionAttribute = surfaceGeometry.getAttribute('position');
@@ -243,17 +253,41 @@ export class Surface {
    * @returns {THREE.Material} Material
    */
   _createMaterial(color) {
-    if (this.shader && this.shader.getMaterial) {
-      // Use shader manager's material
-      return this.shader.getMaterial({
+    // For the shader compatibility issues, create a more compatible approach
+    if (this.shader && this.shader.type === 'toon') {
+      // Use specific MeshToonMaterial for toon shader
+      return new THREE.MeshToonMaterial({
         color: color,
-        roughness: 0.7,
-        metalness: 0.1,
         transparent: true,
         opacity: 0.8,
         side: THREE.DoubleSide,
         wireframe: this.wireframe
       });
+    } else if (this.shader && this.shader.getMaterial) {
+      // Use shader manager's material for other shader types
+      try {
+        return this.shader.getMaterial({
+          color: color,
+          roughness: 0.7,
+          metalness: 0.1,
+          transparent: true,
+          opacity: 0.8,
+          side: THREE.DoubleSide,
+          wireframe: this.wireframe
+        });
+      } catch (error) {
+        console.warn("Error creating material with shader, falling back to standard material:", error);
+        // Fallback to standard material on error
+        return new THREE.MeshStandardMaterial({
+          color: color,
+          roughness: 0.7,
+          metalness: 0.1,
+          transparent: true,
+          opacity: 0.8,
+          side: THREE.DoubleSide,
+          wireframe: this.wireframe
+        });
+      }
     }
     
     // Fallback to standard material
@@ -405,7 +439,11 @@ export class Surface {
       // Apply to all materials
       this.meshes.forEach(mesh => {
         if (mesh.material) {
-          this.shader.updateEffectStrength(mesh.material, strength);
+          try {
+            this.shader.updateEffectStrength(mesh.material, strength);
+          } catch (error) {
+            console.warn("Error updating effect strength:", error);
+          }
         }
       });
     }
