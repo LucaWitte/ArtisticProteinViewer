@@ -3,9 +3,8 @@
  * Provides an interface for different shader effects in the visualization
  */
 
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js';
+import * as THREE from 'three';
 import { CONFIG } from '../config.js';
-import { standardVert, standardFrag } from './ShaderChunks.js';
 
 export class ShaderManager {
   /**
@@ -115,9 +114,14 @@ export class ShaderManager {
     return {
       type: 'toon',
       getMaterial: (options) => {
+        // Create a new toon material - note we're removing incompatible properties
+        const toonOptions = { ...options };
+        delete toonOptions.roughness;
+        delete toonOptions.metalness;
+        
         // Create a new toon material
         const material = new THREE.MeshToonMaterial({
-          ...options,
+          ...toonOptions,
           gradientMap: this._createToonGradientTexture(3)
         });
         
@@ -153,12 +157,12 @@ export class ShaderManager {
         // Start with a physical material
         const material = new THREE.MeshStandardMaterial({
           ...options,
-          emissive: options.color.clone(),
+          emissive: options.color ? options.color.clone() : new THREE.Color(0x000000),
           emissiveIntensity: 0.2
         });
         
         // Store original color
-        material.userData.originalColor = options.color.clone();
+        material.userData.originalColor = options.color ? options.color.clone() : new THREE.Color(0xffffff);
         material.userData.effectStrength = 1.0;
         
         return material;
@@ -189,7 +193,7 @@ export class ShaderManager {
         const material = new THREE.MeshStandardMaterial(options);
         
         // Store original color and effect strength
-        material.userData.originalColor = options.color.clone();
+        material.userData.originalColor = options.color ? options.color.clone() : new THREE.Color(0xffffff);
         material.userData.effectStrength = 1.0;
         material.userData.outlineApplied = false;
         
