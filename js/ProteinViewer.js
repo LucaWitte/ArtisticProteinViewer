@@ -5,10 +5,10 @@
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.150.1/examples/jsm/controls/OrbitControls.js';
-import { WebGLDetector } from './WebGLDetector.js';
-import { RendererFactory } from './RendererFactory.js';
-import { EnhancedPDBLoader } from './EnhancedPDBLoader.js';
-import { ProteinShader } from './ProteinShader.js';
+import { WebGLDetector } from './utils/WebGLDetector.js';
+import { RendererFactory } from './app/RendererFactory.js';
+import { PDBLoader } from './loaders/PDBLoader.js';
+import { ProteinShader } from './shaders/ProteinShader.js';
 
 export class ProteinViewer {
   /**
@@ -417,7 +417,7 @@ export class ProteinViewer {
       this._clearProtein();
       
       // Create loader
-      const loader = new EnhancedPDBLoader();
+      const loader = new PDBLoader();
       
       // Load PDB file
       const pdbData = await loader.load(url, (progress) => {
@@ -461,7 +461,7 @@ export class ProteinViewer {
       this._clearProtein();
       
       // Create loader
-      const loader = new EnhancedPDBLoader();
+      const loader = new PDBLoader();
       
       // Load file
       const pdbData = await loader.loadFromFile(file, (progress) => {
