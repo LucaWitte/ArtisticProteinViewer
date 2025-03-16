@@ -13,21 +13,11 @@ export class WebGLDetector {
   static isWebGLAvailable() {
     try {
       const canvas = document.createElement('canvas');
-      
-      // Try both webgl and experimental-webgl contexts
-      // Set failIfMajorPerformanceCaveat to false to work on more devices
-      let gl = canvas.getContext('webgl', { failIfMajorPerformanceCaveat: false });
-      
-      if (!gl) {
-        gl = canvas.getContext('experimental-webgl', { failIfMajorPerformanceCaveat: false });
-      }
-      
-      // Clean up
-      if (gl) {
-        gl.getExtension('WEBGL_lose_context')?.loseContext();
-      }
-      
-      return !!gl;
+      return !!(
+        window.WebGLRenderingContext &&
+        (canvas.getContext('webgl', { failIfMajorPerformanceCaveat: false }) || 
+         canvas.getContext('experimental-webgl', { failIfMajorPerformanceCaveat: false }))
+      );
     } catch (error) {
       console.warn('WebGL detection error:', error);
       return false;
@@ -41,14 +31,8 @@ export class WebGLDetector {
   static isWebGL2Available() {
     try {
       const canvas = document.createElement('canvas');
-      const gl = canvas.getContext('webgl2', { failIfMajorPerformanceCaveat: false });
-      
-      // Clean up
-      if (gl) {
-        gl.getExtension('WEBGL_lose_context')?.loseContext();
-      }
-      
-      return !!gl;
+      return !!(window.WebGL2RenderingContext && 
+                canvas.getContext('webgl2', { failIfMajorPerformanceCaveat: false }));
     } catch (error) {
       console.warn('WebGL2 detection error:', error);
       return false;
@@ -62,7 +46,7 @@ export class WebGLDetector {
    */
   static _createTestContext() {
     try {
-      // Create a minimum size canvas to reduce memory impact
+      // Create a canvas for testing
       const canvas = document.createElement('canvas');
       canvas.width = 1;
       canvas.height = 1;
@@ -73,14 +57,9 @@ export class WebGLDetector {
       
       // Fall back to WebGL 1 if WebGL 2 is not available
       if (!gl) {
-        gl = canvas.getContext('webgl', { failIfMajorPerformanceCaveat: false });
+        gl = canvas.getContext('webgl', { failIfMajorPerformanceCaveat: false }) || 
+             canvas.getContext('experimental-webgl', { failIfMajorPerformanceCaveat: false });
         contextVersion = 1;
-        
-        // Try experimental WebGL as a last resort
-        if (!gl) {
-          gl = canvas.getContext('experimental-webgl', { failIfMajorPerformanceCaveat: false });
-          contextVersion = 1;
-        }
       }
       
       if (!gl) {
@@ -108,24 +87,28 @@ export class WebGLDetector {
     
     try {
       // Try the standard way first
-      info.vendor = gl.getParameter(gl.VENDOR) || 'Unknown';
-      info.renderer = gl.getParameter(gl.RENDERER) || 'Unknown';
+      info.vendor = gl.getParameter(gl.VENDOR);
+      info.renderer = gl.getParameter(gl.RENDERER);
       
-      // Only try with debug extension if we still have default values
-      if (info.vendor === 'Unknown' || info.renderer === 'Unknown') {
-        try {
-          const debugExt = gl.getExtension('WEBGL_debug_renderer_info');
-          if (debugExt) {
-            if (info.vendor === 'Unknown') {
-              info.vendor = gl.getParameter(debugExt.UNMASKED_VENDOR_WEBGL) || 'Unknown';
-            }
-            if (info.renderer === 'Unknown') {
-              info.renderer = gl.getParameter(debugExt.UNMASKED_RENDERER_WEBGL) || 'Unknown';
-            }
+      // If we got actual values, return them
+      if (info.vendor !== '' && info.renderer !== '') {
+        return info;
+      }
+      
+      // Try with WEBGL_debug_renderer_info extension only as fallback
+      // Note: This extension is deprecated in some browsers
+      try {
+        const debugExt = gl.getExtension('WEBGL_debug_renderer_info');
+        if (debugExt) {
+          if (info.vendor === '') {
+            info.vendor = gl.getParameter(debugExt.UNMASKED_VENDOR_WEBGL) || 'Unknown';
           }
-        } catch (extError) {
-          // Silently ignore - this extension is deprecated in some browsers
+          if (info.renderer === '') {
+            info.renderer = gl.getParameter(debugExt.UNMASKED_RENDERER_WEBGL) || 'Unknown';
+          }
         }
+      } catch (extError) {
+        console.warn('WEBGL_debug_renderer_info extension error (deprecated in some browsers)');
       }
     } catch (error) {
       console.warn('Error getting renderer info:', error);
@@ -172,8 +155,7 @@ export class WebGLDetector {
       standardDerivatives: false,
       vertexArrayObject: false,
       sRGBTextures: false,
-      isMobile: WebGLDetector.isMobileDevice(),
-      isLowEnd: WebGLDetector.isLowEndDevice()
+      isMobile: WebGLDetector.isMobileDevice()
     };
     
     // Get test context
@@ -235,9 +217,8 @@ export class WebGLDetector {
           contextVersion === 2 || 
           WebGLDetector._hasExtension(gl, 'EXT_sRGB'),
         
-        // Detect device types
-        isMobile: WebGLDetector.isMobileDevice(),
-        isLowEnd: WebGLDetector.isLowEndDevice()
+        // Detect mobile/desktop device type
+        isMobile: WebGLDetector.isMobileDevice()
       };
       
       // Get max anisotropy if supported
@@ -298,9 +279,6 @@ export class WebGLDetector {
       if (loseExt) {
         loseExt.loseContext();
       }
-      
-      // Remove extra references
-      test.gl = null;
     } catch (error) {
       console.warn('Error cleaning up test context:', error);
     }
@@ -318,66 +296,16 @@ export class WebGLDetector {
       navigator.msMaxTouchPoints > 0
     );
     
-    // Check if user agent contains mobile keywords
-    const userAgent = navigator.userAgent.toLowerCase();
-    const mobileKeywords = [
-      'android', 'webos', 'iphone', 'ipad', 'ipod', 'blackberry', 
-      'windows phone', 'mobile', 'tablet'
-    ];
-    
-    const isMobileUserAgent = mobileKeywords.some(keyword => 
-      userAgent.includes(keyword)
-    );
-    
     // Check screen size
     const isSmallScreen = window.innerWidth < 768 || window.innerHeight < 768;
     
-    // Check memory if available (newer browsers)
-    let hasLimitedMemory = false;
-    if (navigator.deviceMemory) {
-      hasLimitedMemory = navigator.deviceMemory < 4;
-    }
-    
-    return (hasTouchScreen && (isSmallScreen || isMobileUserAgent)) || 
-           (isMobileUserAgent && (isSmallScreen || hasLimitedMemory));
-  }
-  
-  /**
-   * Check if the device is a low-end device
-   * @returns {boolean} True if the device is likely a low-end device
-   */
-  static isLowEndDevice() {
-    // Check if user agent indicates low-end device
+    // Check user agent for mobile devices
     const userAgent = navigator.userAgent.toLowerCase();
+    const mobileKeywords = ['android', 'iphone', 'ipad', 'ipod', 'mobile', 'tablet'];
+    const isMobileUserAgent = mobileKeywords.some(keyword => userAgent.includes(keyword));
     
-    // Check for device memory (newer browsers)
-    if (navigator.deviceMemory) {
-      if (navigator.deviceMemory < 2) {
-        return true;
-      }
-    }
-    
-    // Check for hardware concurrency (CPU cores)
-    if (navigator.hardwareConcurrency) {
-      if (navigator.hardwareConcurrency < 4) {
-        return true;
-      }
-    }
-    
-    // Check for typical low-end indicators in user agent
-    const lowEndKeywords = [
-      'spreadtrum', 'mediatek', 'msm', 'sm-g', 'sm-j', 'redmi', 'mi 5', 'mi 4',
-      'kfthwi', 'lenovo a', 'android 6', 'android 5', 'android 4'
-    ];
-    
-    const isLowEndUA = lowEndKeywords.some(keyword => 
-      userAgent.includes(keyword)
-    );
-    
-    // Small screen size can also indicate a low-end device
-    const isVerySmallScreen = window.innerWidth < 400 || window.innerHeight < 400;
-    
-    return isLowEndUA || isVerySmallScreen;
+    // For tablets, we want to treat them as mobile for rendering purposes
+    return (hasTouchScreen && isSmallScreen) || isMobileUserAgent;
   }
   
   /**
@@ -386,48 +314,45 @@ export class WebGLDetector {
    * @param {Object} capabilities - WebGL capabilities
    */
   static _adjustPerformanceSettings(capabilities) {
-    // Adjust renderer settings first
-    CONFIG.RENDERER.ANTIALIAS = !capabilities.isMobile && !capabilities.isLowEnd;
-    CONFIG.RENDERER.SHADOW_MAP_ENABLED = !capabilities.isMobile && !capabilities.isLowEnd;
-    CONFIG.RENDERER.PIXEL_RATIO = Math.min(
-      window.devicePixelRatio || 1, 
-      capabilities.isMobile ? 1.5 : 2
-    );
-    
-    // Adjust visualization quality based on device capabilities
-    if (capabilities.isMobile || capabilities.isLowEnd) {
-      // Lower quality for mobile/low-end devices
-      CONFIG.VISUALIZATION.BALL_STICK.SEGMENT_COUNT = 6;
-      CONFIG.VISUALIZATION.RIBBON.CURVE_SEGMENTS = 8;
-      CONFIG.VISUALIZATION.SURFACE.RESOLUTION = 2.5;
-      CONFIG.VISUALIZATION.SURFACE.SMOOTHING = 0;
+    // If on mobile or low-end device, reduce quality settings
+    if (capabilities.isMobile) {
+      CONFIG.RENDERER.ANTIALIAS = window.devicePixelRatio === 1;
+      CONFIG.RENDERER.SHADOW_MAP_ENABLED = false;
+      CONFIG.RENDERER.PIXEL_RATIO = Math.min(window.devicePixelRatio, 2);
+      
+      CONFIG.VISUALIZATION.BALL_STICK.SEGMENT_COUNT = 8;
+      CONFIG.VISUALIZATION.RIBBON.CURVE_SEGMENTS = 12;
+      CONFIG.VISUALIZATION.SURFACE.RESOLUTION = 2.0;
     }
     
-    // Always use instancing on capable devices, never on incapable ones
-    CONFIG.VISUALIZATION.BALL_STICK.INSTANCING_ENABLED = capabilities.instancedArrays;
-    
-    // If the device has a small texture size limit, reduce surface quality
-    if (capabilities.maxTextureSize < 4096) {
-      CONFIG.VISUALIZATION.SURFACE.RESOLUTION = Math.max(
-        2.0, 
-        CONFIG.VISUALIZATION.SURFACE.RESOLUTION
-      );
-    }
-    
-    // Apply specific workarounds based on known problematic GPUs
-    const rendererLower = capabilities.renderer.toLowerCase();
-    
-    if (rendererLower.includes('intel') || 
-        rendererLower.includes('hd graphics') ||
-        rendererLower.includes('mesa') ||
-        rendererLower.includes('swiftshader')) {
-      // Intel integrated graphics and software renderers often have issues
+    // If WebGL version is 1, further reduce settings
+    if (capabilities.webGLVersion === 1) {
       CONFIG.RENDERER.ANTIALIAS = false;
       CONFIG.RENDERER.SHADOW_MAP_ENABLED = false;
       CONFIG.VISUALIZATION.BALL_STICK.SEGMENT_COUNT = 6;
       CONFIG.VISUALIZATION.RIBBON.CURVE_SEGMENTS = 8;
+      CONFIG.VISUALIZATION.SURFACE.RESOLUTION = 2.5;
+    }
+    
+    // If instancing is not supported, disable it
+    if (!capabilities.instancedArrays) {
+      CONFIG.VISUALIZATION.BALL_STICK.INSTANCING_ENABLED = false;
+    }
+    
+    // If limited texture size, adjust surface resolution
+    if (capabilities.maxTextureSize < 4096) {
+      CONFIG.VISUALIZATION.SURFACE.RESOLUTION = Math.max(2.0, CONFIG.VISUALIZATION.SURFACE.RESOLUTION);
+    }
+    
+    // If renderer is known to have issues, apply specific workarounds
+    const rendererLower = capabilities.renderer.toLowerCase();
+    
+    if (rendererLower.includes('intel') || rendererLower.includes('hd graphics')) {
+      // Intel integrated graphics often has issues with complex shaders
+      CONFIG.RENDERER.ANTIALIAS = false;
+      CONFIG.RENDERER.SHADOW_MAP_ENABLED = false;
+      CONFIG.VISUALIZATION.BALL_STICK.INSTANCING_ENABLED = false;
       CONFIG.VISUALIZATION.SURFACE.RESOLUTION = 3.0;
-      CONFIG.PERFORMANCE.ATOM_LIMIT_LOD = 10000;
     }
   }
   
@@ -440,68 +365,19 @@ export class WebGLDetector {
   static setupContextHandling(renderer, onLost, onRestored) {
     if (!renderer || !renderer.domElement) return;
     
-    // Handle WebGL context loss - VERY IMPORTANT
+    // Handle WebGL context loss
     renderer.domElement.addEventListener('webglcontextlost', (event) => {
-      console.warn('WebGL context lost in detector');
-      
-      // This prevents lost context = the most important part! 
-      // Without this, context won't be restored
-      event.preventDefault(); 
+      console.warn('WebGL context lost');
+      event.preventDefault();
       
       if (onLost) onLost();
     }, false);
     
     // Handle WebGL context restoration
     renderer.domElement.addEventListener('webglcontextrestored', () => {
-      console.log('WebGL context restored in detector');
+      console.log('WebGL context restored');
       
       if (onRestored) onRestored();
     }, false);
-    
-    // For manual testing/recovery
-    try {
-      const gl = renderer.getContext();
-      if (gl) {
-        const loseContextExt = gl.getExtension('WEBGL_lose_context');
-        if (loseContextExt) {
-          // Store on renderer for potential manual testing
-          renderer._loseContextExt = loseContextExt;
-        }
-      }
-    } catch (error) {
-      console.warn('Error getting WEBGL_lose_context extension:', error);
-    }
-  }
-  
-  /**
-   * Use this method to test context loss/restore functionality
-   * @param {THREE.WebGLRenderer} renderer - Renderer to test
-   */
-  static testContextLoss(renderer) {
-    if (!renderer || !renderer.domElement) return;
-    
-    try {
-      // Get extension
-      const gl = renderer.getContext();
-      if (!gl) return;
-      
-      const loseExt = gl.getExtension('WEBGL_lose_context');
-      if (!loseExt) {
-        console.warn('WEBGL_lose_context extension not available for testing');
-        return;
-      }
-      
-      // Trigger context loss manually
-      console.log('Manually triggering WebGL context loss...');
-      loseExt.loseContext();
-      
-      // Restore after 2 seconds
-      setTimeout(() => {
-        console.log('Manually restoring WebGL context...');
-        loseExt.restoreContext();
-      }, 2000);
-    } catch (error) {
-      console.error('Error testing context loss:', error);
-    }
   }
 }
