@@ -6,7 +6,7 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js';
 import { CONFIG } from '../config.js';
 
-export class EnhancedPDBLoader {
+export class PDBLoader {
   /**
    * Create a new PDB loader
    */
