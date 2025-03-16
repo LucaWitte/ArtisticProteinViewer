@@ -6,7 +6,7 @@
 // Wait for DOM to be ready
 document.addEventListener('DOMContentLoaded', function() {
   // 1. Import our modules
-  import('./ProteinViewer.js')
+  import('./js/ProteinViewer.js')    
     .then(module => {
       const ProteinViewer = module.ProteinViewer;
       
