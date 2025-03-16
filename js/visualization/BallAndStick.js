@@ -47,6 +47,9 @@ export class BallAndStick {
     
     // Effect strength
     this.effectStrength = 1.0;
+    
+    // Shared geometries for reuse
+    this.sharedGeometries = {};
   }
   
   /**
@@ -54,27 +57,72 @@ export class BallAndStick {
    * @returns {Promise<void>} Promise that resolves when visualization is created
    */
   async create() {
-    const useInstancing = this.config.INSTANCING_ENABLED && 
-                         this._shouldUseInstancing();
-    
-    if (useInstancing) {
-      await this._createWithInstancing();
-    } else {
-      await this._createStandard();
+    try {
+      // Check if protein data exists
+      if (!this.proteinModel || !this.proteinModel.atoms || this.proteinModel.atoms.length === 0) {
+        console.warn('No protein data available for BallAndStick visualization');
+        return this.object;
+      }
+      
+      // Determine which method to use based on system capabilities and protein size
+      const useInstancing = this.config.INSTANCING_ENABLED && 
+                           this._shouldUseInstancing();
+      
+      // Create shared geometries once
+      this._createSharedGeometries();
+      
+      // Choose creation method based on capabilities
+      if (useInstancing) {
+        // Break large proteins into chunks to prevent context loss
+        await this._createWithChunkedInstancing();
+      } else {
+        await this._createStandard();
+      }
+      
+      // Apply initial effect strength
+      this.updateEffectStrength(this.effectStrength);
+      
+      return this.object;
+    } catch (error) {
+      console.error('Error creating Ball and Stick visualization:', error);
+      // Create a minimal representation as fallback
+      this._createFallbackVisualization();
+      return this.object;
     }
-    
-    // Apply initial effect strength
-    this.updateEffectStrength(this.effectStrength);
-    
-    return this.object;
   }
   
   /**
-   * Create the visualization using instanced meshes
+   * Create shared geometries for reuse
+   * @private
+   */
+  _createSharedGeometries() {
+    // Create low-poly sphere geometry for atoms (reused for all atoms)
+    this.sharedGeometries.sphere = new THREE.SphereGeometry(
+      1.0, // Base radius of 1, will be scaled per atom
+      this.segmentCount,
+      this.segmentCount / 2 // Reduce segments for better performance
+    );
+    
+    // Create cylinder geometry for bonds (reused for all bonds)
+    this.sharedGeometries.cylinder = new THREE.CylinderGeometry(
+      1.0, // Base radius of 1, will be scaled
+      1.0,
+      1.0, // Base height of 1, will be scaled
+      Math.max(6, this.segmentCount / 2), // Reduce segments for better performance
+      1, // heightSegments
+      false // openEnded
+    );
+    
+    // Rotate cylinder to align with Y axis
+    this.sharedGeometries.cylinder.rotateX(Math.PI / 2);
+  }
+  
+  /**
+   * Create visualization with instancing, but in smaller chunks to prevent context loss
    * @private
    * @returns {Promise<void>} Promise that resolves when visualization is created
    */
-  async _createWithInstancing() {
+  async _createWithChunkedInstancing() {
     return new Promise(resolve => {
       const atoms = this.proteinModel.atoms;
       const bonds = this.proteinModel.bonds;
@@ -84,146 +132,102 @@ export class BallAndStick {
         ? atoms
         : atoms.filter(atom => atom.element !== 'H');
       
-      // Create shared sphere geometry for atoms
-      const sphereGeometry = new THREE.SphereGeometry(
-        1.0, // Base radius of 1, will be scaled per atom
-        this.segmentCount,
-        this.segmentCount
-      );
-      
-      // Create shared cylinder geometry for bonds
-      const cylinderGeometry = new THREE.CylinderGeometry(
-        1.0, // Base radius of 1, will be scaled
-        1.0,
-        1.0, // Base height of 1, will be scaled
-        this.segmentCount,
-        1, // heightSegments
-        false // openEnded
-      );
-      
-      // Rotate cylinder to align with Y axis
-      cylinderGeometry.rotateX(Math.PI / 2);
-      
-      // Create instanced materials for atoms (one per color)
-      const colorMap = new Map();
-      
-      // Process atoms
+      // Group atoms by element for efficient rendering
+      const atomsByElement = {};
       filteredAtoms.forEach(atom => {
-        const color = this.proteinModel.getAtomColor(atom, this.colorScheme);
-        const colorHex = '#' + color.getHexString();
+        const element = atom.element;
+        if (!atomsByElement[element]) {
+          atomsByElement[element] = [];
+        }
+        atomsByElement[element].push(atom);
+      });
+      
+      // Process atom groups in manageable chunks
+      const CHUNK_SIZE = 1000; // Process atoms in chunks of 1000
+      
+      // Process each element type
+      Object.entries(atomsByElement).forEach(([element, elementAtoms]) => {
+        // Get color for this element
+        const color = this.proteinModel.getAtomColor(elementAtoms[0], this.colorScheme);
         
-        if (!colorMap.has(colorHex)) {
-          // Create new material for this color
+        // Get number of chunks needed
+        const numChunks = Math.ceil(elementAtoms.length / CHUNK_SIZE);
+        
+        // Process each chunk
+        for (let i = 0; i < numChunks; i++) {
+          const startIdx = i * CHUNK_SIZE;
+          const endIdx = Math.min((i + 1) * CHUNK_SIZE, elementAtoms.length);
+          const chunkAtoms = elementAtoms.slice(startIdx, endIdx);
+          
+          // Create material
           const material = this._createMaterial(color);
           
-          colorMap.set(colorHex, {
-            color,
+          // Use instancing for this chunk
+          const instancedMesh = new THREE.InstancedMesh(
+            this.sharedGeometries.sphere,
             material,
-            atoms: []
-          });
-        }
-        
-        // Add atom to its color group
-        colorMap.get(colorHex).atoms.push(atom);
-      });
-      
-      // Create instanced meshes for each color
-      colorMap.forEach(({ color, material, atoms }) => {
-        // Create instanced mesh
-        const instancedMesh = new THREE.InstancedMesh(
-          sphereGeometry,
-          material,
-          atoms.length
-        );
-        
-        instancedMesh.name = `Atoms_${color.getHexString()}`;
-        instancedMesh.castShadow = true;
-        instancedMesh.receiveShadow = true;
-        
-        // Set instance matrices and colors
-        const matrix = new THREE.Matrix4();
-        
-        atoms.forEach((atom, i) => {
-          // Calculate scale based on element
-          const scale = atom.radius * this.atomScale;
-          
-          // Set position and scale
-          matrix.makeScale(scale, scale, scale);
-          matrix.setPosition(
-            atom.position.x - this.proteinModel.centerOfMass.x,
-            atom.position.y - this.proteinModel.centerOfMass.y,
-            atom.position.z - this.proteinModel.centerOfMass.z
+            chunkAtoms.length
           );
           
-          instancedMesh.setMatrixAt(i, matrix);
-          instancedMesh.setColorAt(i, color);
-        });
-        
-        // Update instance matrices
-        instancedMesh.instanceMatrix.needsUpdate = true;
-        
-        // Add to atoms group
-        this.atomsGroup.add(instancedMesh);
-        this.atomMeshes.push(instancedMesh);
-      });
-      
-      // Process bonds
-      const bondInstances = [];
-      
-      bonds.forEach(bond => {
-        const atom1 = atoms[bond.atomIndex1];
-        const atom2 = atoms[bond.atomIndex2];
-        
-        // Skip bonds to hydrogen if configured
-        if (!this.showHydrogens && 
-            (atom1.element === 'H' || atom2.element === 'H')) {
-          return;
+          instancedMesh.name = `Atoms_${element}_${i}`;
+          instancedMesh.castShadow = true;
+          instancedMesh.receiveShadow = true;
+          
+          // Set instance matrices
+          const matrix = new THREE.Matrix4();
+          
+          chunkAtoms.forEach((atom, idx) => {
+            // Calculate scale based on element
+            const scale = atom.radius * this.atomScale;
+            
+            // Set position and scale
+            matrix.makeScale(scale, scale, scale);
+            matrix.setPosition(
+              atom.position.x - this.proteinModel.centerOfMass.x,
+              atom.position.y - this.proteinModel.centerOfMass.y,
+              atom.position.z - this.proteinModel.centerOfMass.z
+            );
+            
+            instancedMesh.setMatrixAt(idx, matrix);
+          });
+          
+          // Update instance matrices
+          instancedMesh.instanceMatrix.needsUpdate = true;
+          
+          // Add to atoms group
+          this.atomsGroup.add(instancedMesh);
+          this.atomMeshes.push(instancedMesh);
         }
-        
-        // Get positions
-        const pos1 = new THREE.Vector3(
-          atom1.position.x - this.proteinModel.centerOfMass.x,
-          atom1.position.y - this.proteinModel.centerOfMass.y,
-          atom1.position.z - this.proteinModel.centerOfMass.z
-        );
-        
-        const pos2 = new THREE.Vector3(
-          atom2.position.x - this.proteinModel.centerOfMass.x,
-          atom2.position.y - this.proteinModel.centerOfMass.y,
-          atom2.position.z - this.proteinModel.centerOfMass.z
-        );
-        
-        // Calculate bond properties
-        const bondLength = pos1.distanceTo(pos2);
-        const bondMidpoint = pos1.clone().add(pos2).multiplyScalar(0.5);
-        
-        // Get colors
-        const color1 = this.proteinModel.getAtomColor(atom1, this.colorScheme);
-        const color2 = this.proteinModel.getAtomColor(atom2, this.colorScheme);
-        
-        // For now, use the average color for bonds
-        const bondColor = color1.clone().lerp(color2, 0.5);
-        
-        // Add to bond instances
-        bondInstances.push({
-          start: pos1,
-          end: pos2,
-          length: bondLength,
-          midpoint: bondMidpoint,
-          color: bondColor
-        });
       });
       
-      // Create instanced mesh for bonds
-      if (bondInstances.length > 0) {
-        const bondMaterial = this._createMaterial(new THREE.Color(0x808080));
+      // Process bonds in chunks too
+      const BOND_CHUNK_SIZE = 1000;
+      const numBondChunks = Math.ceil(bonds.length / BOND_CHUNK_SIZE);
+      
+      for (let i = 0; i < numBondChunks; i++) {
+        const startIdx = i * BOND_CHUNK_SIZE;
+        const endIdx = Math.min((i + 1) * BOND_CHUNK_SIZE, bonds.length);
+        const chunkBonds = bonds.slice(startIdx, endIdx);
+        
+        // Filter bonds to skip hydrogen bonds if needed
+        const filteredBonds = this.showHydrogens 
+          ? chunkBonds 
+          : chunkBonds.filter(bond => {
+              const atom1 = atoms[bond.atomIndex1];
+              const atom2 = atoms[bond.atomIndex2];
+              return atom1.element !== 'H' && atom2.element !== 'H';
+            });
+        
+        if (filteredBonds.length === 0) continue;
+        
+        // Create one instanced mesh for this chunk of bonds
         const bondInstancedMesh = new THREE.InstancedMesh(
-          cylinderGeometry,
-          bondMaterial,
-          bondInstances.length
+          this.sharedGeometries.cylinder,
+          this._createMaterial(new THREE.Color(0x808080)),
+          filteredBonds.length
         );
         
-        bondInstancedMesh.name = 'Bonds';
+        bondInstancedMesh.name = `Bonds_${i}`;
         bondInstancedMesh.castShadow = true;
         bondInstancedMesh.receiveShadow = true;
         
@@ -232,25 +236,42 @@ export class BallAndStick {
         const quaternion = new THREE.Quaternion();
         const up = new THREE.Vector3(0, 1, 0);
         
-        bondInstances.forEach((bond, i) => {
-          // Calculate direction and orientation
-          const direction = bond.end.clone().sub(bond.start).normalize();
+        filteredBonds.forEach((bond, idx) => {
+          const atom1 = atoms[bond.atomIndex1];
+          const atom2 = atoms[bond.atomIndex2];
           
-          // Rotation to align with bond direction
+          // Get positions
+          const pos1 = new THREE.Vector3(
+            atom1.position.x - this.proteinModel.centerOfMass.x,
+            atom1.position.y - this.proteinModel.centerOfMass.y,
+            atom1.position.z - this.proteinModel.centerOfMass.z
+          );
+          
+          const pos2 = new THREE.Vector3(
+            atom2.position.x - this.proteinModel.centerOfMass.x,
+            atom2.position.y - this.proteinModel.centerOfMass.y,
+            atom2.position.z - this.proteinModel.centerOfMass.z
+          );
+          
+          // Calculate bond properties
+          const bondVector = pos2.clone().sub(pos1);
+          const bondLength = bondVector.length();
+          const bondCenter = pos1.clone().add(pos2).multiplyScalar(0.5);
+          
+          // Create direction vector
+          const direction = bondVector.normalize();
+          
+          // Calculate rotation to align with bond direction
           quaternion.setFromUnitVectors(up, direction);
-          
-          // Scale
-          const scale = this.bondScale;
           
           // Set transform
           matrix.compose(
-            bond.midpoint,
+            bondCenter,
             quaternion,
-            new THREE.Vector3(scale, bond.length, scale)
+            new THREE.Vector3(this.bondScale, bondLength, this.bondScale)
           );
           
-          bondInstancedMesh.setMatrixAt(i, matrix);
-          bondInstancedMesh.setColorAt(i, bond.color);
+          bondInstancedMesh.setMatrixAt(idx, matrix);
         });
         
         // Update instance matrices
@@ -280,42 +301,49 @@ export class BallAndStick {
         ? atoms
         : atoms.filter(atom => atom.element !== 'H');
       
-      // Create shared geometries
-      const sphereGeometries = {};
-      const cylinderGeometry = new THREE.CylinderGeometry(
-        this.bondScale,
-        this.bondScale,
-        1, // Will be scaled later
-        this.segmentCount,
-        1,
-        false
-      );
+      // Process only a subset of atoms if there are too many (for performance)
+      const MAX_ATOMS = 10000;
+      let atomsToProcess = filteredAtoms;
       
-      // Rotate cylinder to align with Y axis
-      cylinderGeometry.rotateX(Math.PI / 2);
+      if (filteredAtoms.length > MAX_ATOMS) {
+        console.warn(`Too many atoms (${filteredAtoms.length}), rendering a subset of ${MAX_ATOMS}`);
+        
+        // Try to select evenly distributed atoms
+        const stride = Math.ceil(filteredAtoms.length / MAX_ATOMS);
+        atomsToProcess = [];
+        
+        for (let i = 0; i < filteredAtoms.length; i += stride) {
+          atomsToProcess.push(filteredAtoms[i]);
+        }
+      }
+      
+      // Group atoms by element for shared materials
+      const materialCache = {};
       
       // Process atoms
-      filteredAtoms.forEach(atom => {
+      atomsToProcess.forEach(atom => {
+        // Get color
+        const color = this.proteinModel.getAtomColor(atom, this.colorScheme);
+        const colorHex = color.getHexString();
+        
+        // Use cached material if available
+        if (!materialCache[colorHex]) {
+          materialCache[colorHex] = this._createMaterial(color);
+        }
+        
         // Calculate atom radius based on element
         const radius = atom.radius * this.atomScale;
         
-        // Create or reuse sphere geometry
-        if (!sphereGeometries[atom.element]) {
-          sphereGeometries[atom.element] = new THREE.SphereGeometry(
-            radius,
-            this.segmentCount,
-            this.segmentCount
-          );
-        }
-        
-        // Get color
-        const color = this.proteinModel.getAtomColor(atom, this.colorScheme);
-        
-        // Create material
-        const material = this._createMaterial(color);
-        
         // Create mesh
-        const mesh = new THREE.Mesh(sphereGeometries[atom.element], material);
+        const mesh = new THREE.Mesh(
+          this.sharedGeometries.sphere.clone(),
+          materialCache[colorHex]
+        );
+        
+        // Scale by radius
+        mesh.scale.set(radius, radius, radius);
+        
+        // Position
         mesh.position.set(
           atom.position.x - this.proteinModel.centerOfMass.x,
           atom.position.y - this.proteinModel.centerOfMass.y,
@@ -330,16 +358,37 @@ export class BallAndStick {
         this.atomMeshes.push(mesh);
       });
       
+      // Limit the number of bonds for performance
+      const MAX_BONDS = 15000;
+      let bondsToProcess = this.showHydrogens
+        ? bonds
+        : bonds.filter(bond => {
+            const atom1 = atoms[bond.atomIndex1];
+            const atom2 = atoms[bond.atomIndex2];
+            return atom1.element !== 'H' && atom2.element !== 'H';
+          });
+      
+      if (bondsToProcess.length > MAX_BONDS) {
+        console.warn(`Too many bonds (${bondsToProcess.length}), rendering a subset of ${MAX_BONDS}`);
+        
+        // Try to select evenly distributed bonds
+        const stride = Math.ceil(bondsToProcess.length / MAX_BONDS);
+        const tempBonds = [];
+        
+        for (let i = 0; i < bondsToProcess.length; i += stride) {
+          tempBonds.push(bondsToProcess[i]);
+        }
+        
+        bondsToProcess = tempBonds;
+      }
+      
+      // Create shared bond material
+      const bondMaterial = this._createMaterial(new THREE.Color(0x808080));
+      
       // Process bonds
-      bonds.forEach(bond => {
+      bondsToProcess.forEach(bond => {
         const atom1 = atoms[bond.atomIndex1];
         const atom2 = atoms[bond.atomIndex2];
-        
-        // Skip bonds to hydrogen if configured
-        if (!this.showHydrogens && 
-            (atom1.element === 'H' || atom2.element === 'H')) {
-          return;
-        }
         
         // Get positions
         const pos1 = new THREE.Vector3(
@@ -355,28 +404,19 @@ export class BallAndStick {
         );
         
         // Calculate bond properties
-        const bondLength = pos1.distanceTo(pos2);
+        const bondVector = pos2.clone().sub(pos1);
+        const bondLength = bondVector.length();
         const bondCenter = pos1.clone().add(pos2).multiplyScalar(0.5);
         
-        // Get colors
-        const color1 = this.proteinModel.getAtomColor(atom1, this.colorScheme);
-        const color2 = this.proteinModel.getAtomColor(atom2, this.colorScheme);
-        
-        // For now, use the average color for bonds
-        const bondColor = color1.clone().lerp(color2, 0.5);
-        
-        // Create material
-        const material = this._createMaterial(bondColor);
-        
-        // Create mesh
-        const mesh = new THREE.Mesh(cylinderGeometry.clone(), material);
+        // Create bond mesh
+        const mesh = new THREE.Mesh(this.sharedGeometries.cylinder.clone(), bondMaterial);
         
         // Position and scale
         mesh.position.copy(bondCenter);
-        mesh.scale.set(1, bondLength, 1);
+        mesh.scale.set(this.bondScale, bondLength, this.bondScale);
         
         // Orient along bond direction
-        const direction = pos2.clone().sub(pos1).normalize();
+        const direction = bondVector.normalize();
         const quaternion = new THREE.Quaternion();
         quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
         mesh.quaternion.copy(quaternion);
@@ -394,6 +434,53 @@ export class BallAndStick {
   }
   
   /**
+   * Create a minimal fallback visualization when normal creation fails
+   * @private
+   */
+  _createFallbackVisualization() {
+    console.log('Creating fallback ball and stick visualization');
+    
+    try {
+      const atoms = this.proteinModel.atoms;
+      
+      // Take only a small subset of atoms for the fallback
+      const MAX_FALLBACK_ATOMS = 500;
+      const stride = Math.max(1, Math.floor(atoms.length / MAX_FALLBACK_ATOMS));
+      
+      // Create very low-poly sphere
+      const lowPolySphere = new THREE.SphereGeometry(1, 8, 6);
+      
+      // Create shared material
+      const material = new THREE.MeshBasicMaterial({ color: 0x3498db });
+      
+      // Add representative atoms
+      for (let i = 0; i < atoms.length; i += stride) {
+        const atom = atoms[i];
+        
+        // Create mesh
+        const mesh = new THREE.Mesh(lowPolySphere, material);
+        
+        // Scale by radius
+        const radius = atom.radius * this.atomScale;
+        mesh.scale.set(radius, radius, radius);
+        
+        // Position
+        mesh.position.set(
+          atom.position.x - this.proteinModel.centerOfMass.x,
+          atom.position.y - this.proteinModel.centerOfMass.y,
+          atom.position.z - this.proteinModel.centerOfMass.z
+        );
+        
+        // Add to atoms group
+        this.atomsGroup.add(mesh);
+        this.atomMeshes.push(mesh);
+      }
+    } catch (error) {
+      console.error('Error creating fallback visualization:', error);
+    }
+  }
+  
+  /**
    * Create a material for an atom or bond
    * @private
    * @param {THREE.Color} color - Color for the material
@@ -401,12 +488,16 @@ export class BallAndStick {
    */
   _createMaterial(color) {
     if (this.shader && this.shader.getMaterial) {
-      // Use shader manager's material
-      return this.shader.getMaterial({
-        color: color,
-        roughness: 0.4,
-        metalness: 0.4
-      });
+      try {
+        // Use shader manager's material
+        return this.shader.getMaterial({
+          color: color,
+          roughness: 0.4,
+          metalness: 0.4
+        });
+      } catch (error) {
+        console.warn('Error creating shader material, falling back to standard material:', error);
+      }
     }
     
     // Fallback to standard material
@@ -441,6 +532,8 @@ export class BallAndStick {
    * @param {string} colorScheme - New color scheme
    */
   updateColorScheme(colorScheme) {
+    if (this.colorScheme === colorScheme) return;
+    
     this.colorScheme = colorScheme;
     
     // Remove existing visualization and recreate
@@ -460,6 +553,8 @@ export class BallAndStick {
    * @param {Object} shader - New shader
    */
   updateShader(shader) {
+    if (this.shader === shader) return;
+    
     this.shader = shader;
     
     // Remove existing visualization and recreate
@@ -483,12 +578,16 @@ export class BallAndStick {
     
     // Apply to shader if available
     if (this.shader && this.shader.updateEffectStrength) {
-      // Apply to all materials
-      [...this.atomMeshes, ...this.bondMeshes].forEach(mesh => {
-        if (mesh.material) {
-          this.shader.updateEffectStrength(mesh.material, strength);
-        }
-      });
+      try {
+        // Apply to all materials
+        [...this.atomMeshes, ...this.bondMeshes].forEach(mesh => {
+          if (mesh.material) {
+            this.shader.updateEffectStrength(mesh.material, strength);
+          }
+        });
+      } catch (error) {
+        console.warn('Error updating effect strength:', error);
+      }
     }
   }
   
@@ -497,6 +596,16 @@ export class BallAndStick {
    */
   dispose() {
     this._disposeGeometry();
+    
+    // Also dispose of shared geometries
+    if (this.sharedGeometries) {
+      Object.values(this.sharedGeometries).forEach(geometry => {
+        if (geometry && geometry.dispose) {
+          geometry.dispose();
+        }
+      });
+      this.sharedGeometries = {};
+    }
   }
   
   /**
@@ -506,7 +615,9 @@ export class BallAndStick {
   _disposeGeometry() {
     // Dispose of atoms meshes
     this.atomMeshes.forEach(mesh => {
-      if (mesh.geometry) mesh.geometry.dispose();
+      if (mesh.geometry && mesh.geometry !== this.sharedGeometries.sphere) {
+        mesh.geometry.dispose();
+      }
       if (mesh.material) {
         if (Array.isArray(mesh.material)) {
           mesh.material.forEach(mat => mat.dispose());
@@ -518,7 +629,9 @@ export class BallAndStick {
     
     // Dispose of bond meshes
     this.bondMeshes.forEach(mesh => {
-      if (mesh.geometry) mesh.geometry.dispose();
+      if (mesh.geometry && mesh.geometry !== this.sharedGeometries.cylinder) {
+        mesh.geometry.dispose();
+      }
       if (mesh.material) {
         if (Array.isArray(mesh.material)) {
           mesh.material.forEach(mat => mat.dispose());
