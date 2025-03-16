@@ -4,7 +4,7 @@
  */
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js';
-import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.150.1/examples/jsm/controls/OrbitControls.js';
+import { OrbitControls } from '../lib/OrbitControls.js';
 import { CONFIG } from '../config.js';
 
 export class Controls {
