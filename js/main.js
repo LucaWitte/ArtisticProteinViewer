@@ -11,7 +11,7 @@ import { Controls } from './app/Controls.js';
 import { LoadingScreen } from './ui/LoadingScreen.js';
 import { ThemeToggle } from './ui/ThemeToggle.js';
 import { UIManager } from './ui/UIManager.js';
-import { PDBLoader } from './loaders/PDBLoader.js';
+import { EnhancedPDBLoader as PDBLoader } from './loaders/PDBLoader.js';
 import { ProteinModel } from './visualization/ProteinModel.js';
 import { BallAndStick } from './visualization/BallAndStick.js';
 import { Ribbon } from './visualization/Ribbon.js';
