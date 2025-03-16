@@ -62,6 +62,9 @@ class ProteinVisualizer {
       // Initialize Three.js components
       this._initThreeJS();
       
+      // Set up WebGL context handlers
+      this._setupWebGLContextHandlers();
+      
       // Initialize UI components
       this.loadingScreen.updateStatus('Setting up user interface...');
       this.loadingScreen.updateProgress(30);
@@ -117,47 +120,97 @@ class ProteinVisualizer {
    * @private
    */
   _initThreeJS() {
-    // Get the viewport element
-    const container = document.getElementById('protein-viewport');
+    try {
+      // Get the viewport element
+      const container = document.getElementById('protein-viewport');
+      
+      // Initialize renderer
+      this.renderer = new Renderer({
+        container: container,
+        antialias: CONFIG.RENDERER.ANTIALIAS,
+        alpha: CONFIG.RENDERER.ALPHA,
+        pixelRatio: CONFIG.RENDERER.PIXEL_RATIO
+      });
+      
+      // Initialize scene
+      this.scene = new Scene({
+        backgroundColor: CONFIG.SCENE.BACKGROUND_COLOR,
+        ambientLightIntensity: CONFIG.SCENE.AMBIENT_LIGHT_INTENSITY,
+        directionalLightIntensity: CONFIG.SCENE.DIRECTIONAL_LIGHT_INTENSITY
+      });
+      
+      // Initialize camera
+      this.camera = new Camera({
+        fov: CONFIG.CAMERA.FOV,
+        near: CONFIG.CAMERA.NEAR,
+        far: CONFIG.CAMERA.FAR,
+        position: CONFIG.CAMERA.POSITION
+      });
+      
+      // Initialize controls
+      this.controls = new Controls({
+        camera: this.camera.instance,
+        domElement: this.renderer.domElement,
+        enableDamping: CONFIG.CONTROLS.ENABLE_DAMPING,
+        dampingFactor: CONFIG.CONTROLS.DAMPING_FACTOR,
+        rotateSpeed: CONFIG.CONTROLS.ROTATE_SPEED,
+        zoomSpeed: CONFIG.CONTROLS.ZOOM_SPEED,
+        panSpeed: CONFIG.CONTROLS.PAN_SPEED,
+        minDistance: CONFIG.CONTROLS.MIN_DISTANCE,
+        maxDistance: CONFIG.CONTROLS.MAX_DISTANCE
+      });
+      
+      // Handle window resize
+      window.addEventListener('resize', this._handleResize.bind(this));
+    } catch (error) {
+      console.error('Error initializing Three.js components:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Set up handlers for WebGL context loss/restoration
+   * @private
+   */
+  _setupWebGLContextHandlers() {
+    if (!this.renderer) return;
     
-    // Initialize renderer
-    this.renderer = new Renderer({
-      container: container,
-      antialias: CONFIG.RENDERER.ANTIALIAS,
-      alpha: CONFIG.RENDERER.ALPHA,
-      pixelRatio: CONFIG.RENDERER.PIXEL_RATIO
+    // Handle WebGL context loss
+    this.renderer.onLost(() => {
+      console.warn('WebGL context lost. Pausing rendering loop.');
+      
+      // Pause rendering
+      this.rendererActive = false;
+      
+      // Show a notification to the user
+      this.loadingScreen.updateStatus('WebGL context lost. Trying to recover...');
+      this.loadingScreen.show();
     });
     
-    // Initialize scene
-    this.scene = new Scene({
-      backgroundColor: CONFIG.SCENE.BACKGROUND_COLOR,
-      ambientLightIntensity: CONFIG.SCENE.AMBIENT_LIGHT_INTENSITY,
-      directionalLightIntensity: CONFIG.SCENE.DIRECTIONAL_LIGHT_INTENSITY
+    // Handle WebGL context restoration
+    this.renderer.onRestored(() => {
+      console.log('WebGL context restored. Resuming operation.');
+      
+      // Resume rendering
+      this.rendererActive = true;
+      
+      // Recreate necessary resources
+      if (this.loadedProtein) {
+        // Recreate protein visualization
+        this.removeVisualization();
+        this._updateVisualization();
+      }
+      
+      this.loadingScreen.updateStatus('Rendering restored!');
+      
+      // Hide loading screen after a short delay
+      setTimeout(() => {
+        this.loadingScreen.hide();
+      }, 1000);
     });
     
-    // Initialize camera
-    this.camera = new Camera({
-      fov: CONFIG.CAMERA.FOV,
-      near: CONFIG.CAMERA.NEAR,
-      far: CONFIG.CAMERA.FAR,
-      position: CONFIG.CAMERA.POSITION
-    });
-    
-    // Initialize controls
-    this.controls = new Controls({
-      camera: this.camera.instance,
-      domElement: this.renderer.domElement,
-      enableDamping: CONFIG.CONTROLS.ENABLE_DAMPING,
-      dampingFactor: CONFIG.CONTROLS.DAMPING_FACTOR,
-      rotateSpeed: CONFIG.CONTROLS.ROTATE_SPEED,
-      zoomSpeed: CONFIG.CONTROLS.ZOOM_SPEED,
-      panSpeed: CONFIG.CONTROLS.PAN_SPEED,
-      minDistance: CONFIG.CONTROLS.MIN_DISTANCE,
-      maxDistance: CONFIG.CONTROLS.MAX_DISTANCE
-    });
-    
-    // Handle window resize
-    window.addEventListener('resize', this._handleResize.bind(this));
+    // Initialize as active
+    this.rendererActive = true;
   }
   
   /**
@@ -213,12 +266,16 @@ class ProteinVisualizer {
     
     try {
       const pdbLoader = new PDBLoader();
-      const pdbData = await pdbLoader.load(CONFIG.DEFAULT_PROTEIN_URL);
+      const pdbData = await pdbLoader.load(CONFIG.DEFAULT_PROTEIN_URL, 
+        progress => {
+          this.loadingScreen.updateProgress(70 + progress * 20);
+        }
+      );
       
       await this._createProteinModel(pdbData);
     } catch (error) {
       console.error('Error loading default protein:', error);
-      this.loadingScreen.updateStatus('Failed to load default protein.');
+      this.loadingScreen.updateStatus('Failed to load default protein. ' + error.message);
     }
   }
   
@@ -236,17 +293,22 @@ class ProteinVisualizer {
       this.loadedProtein = null;
     }
     
-    // Create new protein model
-    this.loadedProtein = new ProteinModel({
-      pdbData: pdbData,
-      scene: this.scene
-    });
-    
-    // Create visualization based on active style
-    await this._updateVisualization();
-    
-    // Center camera on protein
-    this._centerCameraOnProtein();
+    try {
+      // Create new protein model
+      this.loadedProtein = new ProteinModel({
+        pdbData: pdbData,
+        scene: this.scene
+      });
+      
+      // Create visualization based on active style
+      await this._updateVisualization();
+      
+      // Center camera on protein
+      this._centerCameraOnProtein();
+    } catch (error) {
+      console.error('Error creating protein model:', error);
+      throw error;
+    }
   }
   
   /**
@@ -257,48 +319,53 @@ class ProteinVisualizer {
   async _updateVisualization() {
     if (!this.loadedProtein) return;
     
-    // Remove previous visualization if exists
-    if (this.activeVisualization) {
-      this.loadedProtein.removeVisualization();
-      this.activeVisualization = null;
+    try {
+      // Remove previous visualization if exists
+      if (this.activeVisualization) {
+        this.loadedProtein.removeVisualization();
+        this.activeVisualization = null;
+      }
+      
+      // Create new visualization based on style
+      switch (this.activeStyle) {
+        case 'ball-stick':
+          this.activeVisualization = new BallAndStick({
+            proteinModel: this.loadedProtein,
+            colorScheme: this.uiManager.getColorScheme(),
+            shader: this.shaderManager.getShader(this.activeShader)
+          });
+          break;
+          
+        case 'ribbon':
+          this.activeVisualization = new Ribbon({
+            proteinModel: this.loadedProtein,
+            colorScheme: this.uiManager.getColorScheme(),
+            shader: this.shaderManager.getShader(this.activeShader)
+          });
+          break;
+          
+        case 'surface':
+          this.activeVisualization = new Surface({
+            proteinModel: this.loadedProtein,
+            colorScheme: this.uiManager.getColorScheme(),
+            shader: this.shaderManager.getShader(this.activeShader)
+          });
+          break;
+          
+        default:
+          console.warn(`Unknown visualization style: ${this.activeStyle}`);
+          return;
+      }
+      
+      // Apply the visualization
+      await this.activeVisualization.create();
+      
+      // Apply effect strength
+      this._handleEffectStrengthChange(this.uiManager.getEffectStrength());
+    } catch (error) {
+      console.error('Error updating visualization:', error);
+      throw error;
     }
-    
-    // Create new visualization based on style
-    switch (this.activeStyle) {
-      case 'ball-stick':
-        this.activeVisualization = new BallAndStick({
-          proteinModel: this.loadedProtein,
-          colorScheme: this.uiManager.getColorScheme(),
-          shader: this.shaderManager.getShader(this.activeShader)
-        });
-        break;
-        
-      case 'ribbon':
-        this.activeVisualization = new Ribbon({
-          proteinModel: this.loadedProtein,
-          colorScheme: this.uiManager.getColorScheme(),
-          shader: this.shaderManager.getShader(this.activeShader)
-        });
-        break;
-        
-      case 'surface':
-        this.activeVisualization = new Surface({
-          proteinModel: this.loadedProtein,
-          colorScheme: this.uiManager.getColorScheme(),
-          shader: this.shaderManager.getShader(this.activeShader)
-        });
-        break;
-        
-      default:
-        console.warn(`Unknown visualization style: ${this.activeStyle}`);
-        return;
-    }
-    
-    // Apply the visualization
-    await this.activeVisualization.create();
-    
-    // Apply effect strength
-    this._handleEffectStrengthChange(this.uiManager.getEffectStrength());
   }
   
   /**
@@ -324,11 +391,18 @@ class ProteinVisualizer {
     
     requestAnimationFrame(this._animate.bind(this));
     
-    // Update controls
-    this.controls.update();
+    if (!this.rendererActive) return;
     
-    // Render scene
-    this.renderer.render(this.scene.instance, this.camera.instance);
+    try {
+      // Update controls
+      this.controls.update();
+      
+      // Render scene
+      this.renderer.render(this.scene.instance, this.camera.instance);
+    } catch (error) {
+      console.error('Error in animation loop:', error);
+      // Don't stop the loop on error
+    }
   }
   
   /**
@@ -369,7 +443,10 @@ class ProteinVisualizer {
    */
   _handleStyleChange(style) {
     this.activeStyle = style;
-    this._updateVisualization();
+    this._updateVisualization().catch(error => {
+      console.error('Error changing visualization style:', error);
+      this.loadingScreen.showError('Failed to change visualization style: ' + error.message);
+    });
   }
   
   /**
@@ -379,7 +456,11 @@ class ProteinVisualizer {
    */
   _handleColorSchemeChange(scheme) {
     if (this.activeVisualization) {
-      this.activeVisualization.updateColorScheme(scheme);
+      try {
+        this.activeVisualization.updateColorScheme(scheme);
+      } catch (error) {
+        console.error('Error changing color scheme:', error);
+      }
     }
   }
   
@@ -389,7 +470,11 @@ class ProteinVisualizer {
    * @param {string} color - Background color in hex format
    */
   _handleBackgroundColorChange(color) {
-    this.scene.setBackgroundColor(color);
+    try {
+      this.scene.setBackgroundColor(color);
+    } catch (error) {
+      console.error('Error changing background color:', error);
+    }
   }
   
   /**
@@ -398,12 +483,16 @@ class ProteinVisualizer {
    * @param {string} effect - Shader effect
    */
   _handleShaderEffectChange(effect) {
-    this.activeShader = effect;
-    
-    if (this.activeVisualization) {
-      this.activeVisualization.updateShader(
-        this.shaderManager.getShader(effect)
-      );
+    try {
+      this.activeShader = effect;
+      
+      if (this.activeVisualization) {
+        this.activeVisualization.updateShader(
+          this.shaderManager.getShader(effect)
+        );
+      }
+    } catch (error) {
+      console.error('Error changing shader effect:', error);
     }
   }
   
@@ -413,8 +502,12 @@ class ProteinVisualizer {
    * @param {number} strength - Effect strength (0-100)
    */
   _handleEffectStrengthChange(strength) {
-    if (this.activeVisualization) {
-      this.activeVisualization.updateEffectStrength(strength / 100);
+    try {
+      if (this.activeVisualization) {
+        this.activeVisualization.updateEffectStrength(strength / 100);
+      }
+    } catch (error) {
+      console.error('Error changing effect strength:', error);
     }
   }
   
@@ -423,15 +516,19 @@ class ProteinVisualizer {
    * @private
    */
   _handleExport() {
-    if (!this.isInitialized) return;
+    if (!this.isInitialized || !this.rendererActive) return;
     
-    const exportUtils = new ExportUtils({
-      renderer: this.renderer,
-      scene: this.scene.instance,
-      camera: this.camera.instance
-    });
-    
-    exportUtils.exportImage();
+    try {
+      const exportUtils = new ExportUtils({
+        renderer: this.renderer,
+        scene: this.scene.instance,
+        camera: this.camera.instance
+      });
+      
+      exportUtils.exportImage();
+    } catch (error) {
+      console.error('Error exporting image:', error);
+    }
   }
   
   /**
