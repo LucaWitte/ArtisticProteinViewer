@@ -43,7 +43,9 @@ export class ProteinViewer {
       isReady: false,
       currentStyle: this.config.initialStyle,
       currentShader: this.config.initialShader,
-      effectStrength: 0.5
+      effectStrength: 0.5,
+      retryCount: 0,
+      maxRetries: 3
     };
     
     // Storage for rendering objects
@@ -53,11 +55,15 @@ export class ProteinViewer {
     this.controls = null;
     this.protein = null;
     
+    // Recovery timer
+    this.recoveryTimer = null;
+    
     // Bind methods to ensure correct this context
     this._handleResize = this._handleResize.bind(this);
     this._handleVisibilityChange = this._handleVisibilityChange.bind(this);
     this._handleContextLost = this._handleContextLost.bind(this);
     this._handleContextRestored = this._handleContextRestored.bind(this);
+    this._animate = this._animate.bind(this);
     
     // Monitor visible status
     this._setupVisibilityTracking();
@@ -91,12 +97,23 @@ export class ProteinViewer {
         this.canvas = this.container;
       }
       
+      // Wait a frame before initializing to ensure DOM is ready
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      
       // Initialize viewer components
       await this._initRenderer();
+      
+      // Wait another frame to ensure renderer is ready
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      
       this._initScene();
       this._initCamera();
       this._initControls();
       this._initLights();
+      
+      // Wait another frame before loading shader
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      
       this._initShaders();
       this._initEventListeners();
       
@@ -106,13 +123,15 @@ export class ProteinViewer {
       // Set initialized flag
       this.state.isInitialized = true;
       
-      // Load default model if specified
-      if (this.config.defaultUrl) {
-        this.loadProtein(this.config.defaultUrl);
-      }
-      
       // Emit initialized event
       this._emitEvent('initialized');
+      
+      // Load default model if specified (after a short delay)
+      if (this.config.defaultUrl) {
+        setTimeout(() => {
+          this.loadProtein(this.config.defaultUrl);
+        }, 300);
+      }
     } catch (error) {
       console.error('Error initializing protein viewer:', error);
       this._showError('Failed to initialize viewer: ' + error.message);
@@ -125,96 +144,27 @@ export class ProteinViewer {
    */
   async _initRenderer() {
     try {
-      // Create renderer with a fallback mechanism
-      this.renderer = this._createRenderer();
+      // Use RendererFactory for robust renderer creation
+      this.renderer = RendererFactory.createRenderer({
+        container: this.canvas,
+        antialias: true,
+        alpha: true,
+        pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+        onContextLost: this._handleContextLost,
+        onContextRestored: this._handleContextRestored
+      });
       
       // Set initial size
       this._updateRendererSize();
       
       // Set background color
       this.renderer.setClearColor(new THREE.Color(this.config.backgroundColor), 1.0);
+      
+      // Force an initial render to validate the context
+      this.rendererActive = true;
     } catch (error) {
       console.error('Error initializing renderer:', error);
       throw new Error('Failed to initialize WebGL renderer');
-    }
-  }
-  
-  /**
-   * Create a WebGL renderer with fallback and error handling
-   * @private
-   * @returns {THREE.WebGLRenderer} The created renderer
-   */
-  _createRenderer() {
-    // First try with recommended settings
-    try {
-      const renderer = new THREE.WebGLRenderer({
-        canvas: this.canvas,
-        antialias: true,
-        alpha: true,
-        preserveDrawingBuffer: true,
-        powerPreference: 'high-performance',
-        failIfMajorPerformanceCaveat: false
-      });
-      
-      // Set pixel ratio (capped for performance)
-      const pixelRatio = window.devicePixelRatio || 1;
-      renderer.setPixelRatio(Math.min(pixelRatio, 2));
-      
-      // Setup context handlers
-      this._setupContextHandlers(renderer);
-      
-      console.log('WebGL renderer created successfully');
-      return renderer;
-    } catch (error) {
-      console.warn('Error creating WebGL renderer with normal settings:', error);
-      
-      // Try again with minimal settings
-      try {
-        console.log('Attempting to create renderer with minimal settings');
-        const renderer = new THREE.WebGLRenderer({
-          canvas: this.canvas,
-          antialias: false,
-          alpha: false,
-          preserveDrawingBuffer: true,
-          powerPreference: 'default'
-        });
-        
-        // Setup context handlers
-        this._setupContextHandlers(renderer);
-        
-        console.log('Fallback WebGL renderer created successfully');
-        return renderer;
-      } catch (fallbackError) {
-        console.error('Failed to create even fallback renderer:', fallbackError);
-        throw new Error('WebGL initialization failed');
-      }
-    }
-  }
-  
-  /**
-   * Setup context loss/restore handlers for renderer
-   * @private
-   * @param {THREE.WebGLRenderer} renderer - The renderer to monitor
-   */
-  _setupContextHandlers(renderer) {
-    const gl = renderer.getContext();
-    
-    // Add context loss listener
-    renderer.domElement.addEventListener('webglcontextlost', (event) => {
-      console.warn('WebGL context loss detected');
-      event.preventDefault();
-      this._handleContextLost();
-    }, false);
-    
-    // Add context restored listener
-    renderer.domElement.addEventListener('webglcontextrestored', () => {
-      console.log('WebGL context restored');
-      this._handleContextRestored();
-    }, false);
-    
-    // Add experimental context handler (only in Chrome)
-    if (gl && gl.getExtension('WEBGL_lose_context')) {
-      console.log('WEBGL_lose_context extension available');
     }
   }
   
@@ -294,7 +244,7 @@ export class ProteinViewer {
    * @private
    */
   _initShaders() {
-    // Create shader manager
+    // Create shader manager with more conservative settings
     this.shader = new ProteinShader({
       type: this.state.currentShader,
       renderer: this.renderer
@@ -350,40 +300,44 @@ export class ProteinViewer {
    * @private
    */
   _startAnimationLoop() {
-    let lastTime = 0;
+    // Clear any existing animation loop
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
     
-    const animate = (time) => {
-      if (!this.animationFrameId) {
-        return; // Stop if animation was cancelled
-      }
-      
-      this.animationFrameId = requestAnimationFrame(animate);
-      
-      // Skip if not visible or not initialized
-      if (!this.isVisible || !this.state.isInitialized) {
-        return;
-      }
-      
-      // Calculate delta time for animations
-      const delta = time - lastTime;
-      lastTime = time;
-      
-      // Update controls
-      if (this.controls && this.controls.update) {
-        this.controls.update();
-      }
-      
-      // Render scene
-      if (this.renderer && this.scene && this.camera) {
-        try {
-          this.renderer.render(this.scene, this.camera);
-        } catch (error) {
-          console.error('Render error:', error);
-        }
-      }
-    };
+    // Start a new animation loop
+    this.animationFrameId = requestAnimationFrame(this._animate);
+  }
+  
+  /**
+   * Animation frame callback
+   * @private
+   * @param {number} time - Current timestamp
+   */
+  _animate(time) {
+    // Set up next frame
+    this.animationFrameId = requestAnimationFrame(this._animate);
     
-    this.animationFrameId = requestAnimationFrame(animate);
+    // Skip if not visible or not initialized or renderer inactive
+    if (!this.isVisible || !this.state.isInitialized || !this.rendererActive) {
+      return;
+    }
+    
+    // Update controls
+    if (this.controls) {
+      this.controls.update();
+    }
+    
+    // Render scene
+    if (this.renderer && this.scene && this.camera) {
+      try {
+        this.renderer.render(this.scene, this.camera);
+      } catch (error) {
+        console.error('Render error:', error);
+        // Don't stop the loop on error, just skip this frame
+      }
+    }
   }
   
   /**
@@ -528,365 +482,144 @@ export class ProteinViewer {
     // Clear existing visualization
     this._clearVisualization();
     
-    // Function to create ball and stick visualization
-    const createBallAndStick = async () => {
-      // Group geometry by element for efficiency
-      const atomsByElement = new Map();
-      
-      // Process atoms
-      this.protein.atoms.forEach(atom => {
-        const element = atom.element;
-        if (!atomsByElement.has(element)) {
-          atomsByElement.set(element, []);
-        }
-        atomsByElement.get(element).push(atom);
-      });
-      
-      // Create atom geometries by element
-      atomsByElement.forEach((atoms, element) => {
-        // Skip if no atoms of this element
-        if (atoms.length === 0) return;
-        
-        // Color for this element
-        const color = new THREE.Color(atoms[0].color || '#ffffff');
-        
-        // Create geometry - lower segment count for better performance
-        const sphereGeometry = new THREE.SphereGeometry(1, 12, 8);
-        
-        // Create material
-        const material = this.shader.getMaterial({
-          color: color,
-          roughness: 0.4,
-          metalness: 0.4
-        });
-        
-        // Use instancing if available and beneficial
-        if (atoms.length > 20 && typeof THREE.InstancedMesh !== 'undefined') {
-          try {
-            // Create instanced mesh for better performance
-            const instancedMesh = new THREE.InstancedMesh(
-              sphereGeometry,
-              material,
-              atoms.length
-            );
-            
-            // Set positions and scales
-            const matrix = new THREE.Matrix4();
-            const centerOffset = new THREE.Vector3();
-            centerOffset.copy(this.protein.centerOfMass);
-            
-            atoms.forEach((atom, i) => {
-              const radius = atom.radius * 0.6; // Scale down for better visualization
-              
-              matrix.makeScale(radius, radius, radius);
-              matrix.setPosition(
-                atom.position.x - centerOffset.x,
-                atom.position.y - centerOffset.y,
-                atom.position.z - centerOffset.z
-              );
-              
-              instancedMesh.setMatrixAt(i, matrix);
-            });
-            
-            // Update matrices
-            instancedMesh.instanceMatrix.needsUpdate = true;
-            
-            // Add to scene
-            this.proteinGroup.add(instancedMesh);
-            this.proteinMeshes.push(instancedMesh);
-          } catch (instancingError) {
-            console.warn('Instancing failed, falling back to individual meshes', instancingError);
-            // Fall back to individual meshes
-            this._createIndividualAtomMeshes(atoms, sphereGeometry, material, this.protein.centerOfMass);
-          }
-        } else {
-          // Create individual meshes
-          this._createIndividualAtomMeshes(atoms, sphereGeometry, material, this.protein.centerOfMass);
-        }
-      });
-      
-      // Create bond geometry
-      const cylinderGeometry = new THREE.CylinderGeometry(0.1, 0.1, 1, 8, 1);
-      // Rotate to align with Y axis
-      cylinderGeometry.rotateX(Math.PI / 2);
-      
-      // Create bond material
-      const bondMaterial = this.shader.getMaterial({
-        color: 0x888888,
-        roughness: 0.5,
-        metalness: 0.3
-      });
-      
-      // Create bonds
-      this.protein.bonds.forEach(bond => {
-        const atom1 = this.protein.atoms[bond.atomIndex1];
-        const atom2 = this.protein.atoms[bond.atomIndex2];
-        
-        if (!atom1 || !atom2) return;
-        
-        // Get positions
-        const pos1 = new THREE.Vector3(
-          atom1.position.x - this.protein.centerOfMass.x,
-          atom1.position.y - this.protein.centerOfMass.y,
-          atom1.position.z - this.protein.centerOfMass.z
-        );
-        
-        const pos2 = new THREE.Vector3(
-          atom2.position.x - this.protein.centerOfMass.x,
-          atom2.position.y - this.protein.centerOfMass.y,
-          atom2.position.z - this.protein.centerOfMass.z
-        );
-        
-        // Calculate bond length and center
-        const bondVector = pos2.clone().sub(pos1);
-        const bondLength = bondVector.length();
-        const bondCenter = pos1.clone().add(pos2).multiplyScalar(0.5);
-        
-        // Create bond cylinder
-        const bondMesh = new THREE.Mesh(cylinderGeometry, bondMaterial);
-        bondMesh.position.copy(bondCenter);
-        bondMesh.scale.set(1, bondLength, 1);
-        
-        // Orient bond
-        bondMesh.quaternion.setFromUnitVectors(
-          new THREE.Vector3(0, 1, 0),
-          bondVector.clone().normalize()
-        );
-        
-        // Add to scene
-        this.proteinGroup.add(bondMesh);
-        this.bondMeshes.push(bondMesh);
-      });
-    };
-    
-    // Create individual atom meshes for fallback
-    this._createIndividualAtomMeshes = (atoms, geometry, material, centerOfMass) => {
-      atoms.forEach(atom => {
-        const mesh = new THREE.Mesh(geometry, material.clone());
-        
-        // Position and scale
-        mesh.position.set(
-          atom.position.x - centerOfMass.x,
-          atom.position.y - centerOfMass.y,
-          atom.position.z - centerOfMass.z
-        );
-        
-        mesh.scale.multiplyScalar(atom.radius * 0.6);
-        
-        // Add to scene
-        this.proteinGroup.add(mesh);
-        this.proteinMeshes.push(mesh);
-      });
-    };
-    
-    // Function to create ribbon visualization
-    const createRibbon = async () => {
-      // For ribbon visualization, we'll create a simplified version
-      // that just shows the backbone trace with a tube
-      
-      // Group by chain
-      const chainMap = new Map();
-      
-      // Collect backbone atoms (CA) by chain
-      this.protein.atoms.forEach(atom => {
-        if (atom.name === 'CA') {
-          if (!chainMap.has(atom.chainID)) {
-            chainMap.set(atom.chainID, []);
-          }
-          chainMap.get(atom.chainID).push(atom);
-        }
-      });
-      
-      // Process each chain
-      chainMap.forEach((atoms, chainID) => {
-        // Sort atoms by residue sequence number
-        atoms.sort((a, b) => a.resSeq - b.resSeq);
-        
-        // Need at least 2 atoms for a curve
-        if (atoms.length < 2) return;
-        
-        // Extract positions
-        const points = atoms.map(atom => new THREE.Vector3(
-          atom.position.x - this.protein.centerOfMass.x,
-          atom.position.y - this.protein.centerOfMass.y,
-          atom.position.z - this.protein.centerOfMass.z
-        ));
-        
-        // Create spline curve
-        const curve = new THREE.CatmullRomCurve3(points);
-        
-        // Create tube geometry
-        const tubeGeometry = new THREE.TubeGeometry(
-          curve,
-          Math.min(atoms.length * 4, 256), // segments
-          0.3, // radius
-          8, // radial segments
-          false // closed
-        );
-        
-        // Create material - color by chain
-        const chainIndex = this.protein.chains.indexOf(chainID);
-        const hue = (chainIndex / Math.max(1, this.protein.chains.length)) * 360;
-        const chainColor = new THREE.Color().setHSL(hue / 360, 0.7, 0.5);
-        
-        const material = this.shader.getMaterial({
-          color: chainColor,
-          roughness: 0.3,
-          metalness: 0.5
-        });
-        
-        // Create mesh
-        const tubeMesh = new THREE.Mesh(tubeGeometry, material);
-        
-        // Add to scene
-        this.proteinGroup.add(tubeMesh);
-        this.proteinMeshes.push(tubeMesh);
-      });
-    };
-    
-    // Function to create surface visualization
-    const createSurface = async () => {
-      // For surface, we'll fall back to ball and stick for now
-      // as proper surface generation requires more complex algorithms
-      await createBallAndStick();
-    };
-    
-    // Initialize mesh arrays
-    this.proteinMeshes = [];
-    this.bondMeshes = [];
-    
-    // Create visualization based on style
+    // Create a simple ball and stick visualization
+    // Using a simple approach to avoid context loss
     try {
-      switch (this.state.currentStyle) {
-        case 'ribbon':
-          await createRibbon();
-          break;
-        case 'surface':
-          await createSurface();
-          break;
-        case 'ball-stick':
-        default:
-          await createBallAndStick();
-          break;
-      }
-      
-      // Apply effect strength
-      this._updateEffectStrength(this.state.effectStrength);
+      this._createBallAndStickVisualization();
     } catch (error) {
       console.error('Error creating visualization:', error);
-      // Fall back to simplest visualization
+      // Create a minimal fallback visualization
       this._createFallbackVisualization();
     }
   }
   
   /**
-   * Create a simple fallback visualization
+   * Create ball and stick visualization
+   * @private
+   */
+  _createBallAndStickVisualization() {
+    // Import visualization dynamically only when needed
+    import('./visualization/BallAndStick.js')
+      .then(module => {
+        const BallAndStick = module.BallAndStick;
+        
+        // Create the visualization
+        const visualization = new BallAndStick({
+          proteinModel: {
+            atoms: this.protein.atoms,
+            bonds: this.protein.bonds,
+            residues: this.protein.residues,
+            chains: this.protein.chains,
+            centerOfMass: this.protein.centerOfMass,
+            boundingBox: this.protein.boundingBox,
+            getAtomColor: this._getAtomColor.bind(this)
+          },
+          colorScheme: 'element',
+          shader: this.shader
+        });
+        
+        // Create and add to scene
+        visualization.create()
+          .then(() => {
+            this.proteinGroup.add(visualization.object);
+            this.activeVisualization = visualization;
+          })
+          .catch(error => {
+            console.error('Error creating ball and stick visualization:', error);
+            this._createFallbackVisualization();
+          });
+      })
+      .catch(error => {
+        console.error('Error importing visualization module:', error);
+        this._createFallbackVisualization();
+      });
+  }
+  
+  /**
+   * Create fallback visualization when standard methods fail
    * @private
    */
   _createFallbackVisualization() {
-    // Clear any partial visualization
-    this._clearVisualization();
+    if (!this.protein) return;
     
-    if (!this.protein || !this.protein.atoms || this.protein.atoms.length === 0) return;
+    console.log('Creating fallback visualization');
     
     try {
-      // Create a simple point cloud
+      // Create a simple point cloud visualization
+      const atoms = this.protein.atoms;
+      const geometry = new THREE.BufferGeometry();
       const positions = [];
       const colors = [];
       
-      // Collect positions and colors
-      this.protein.atoms.forEach(atom => {
+      // Determine stride for large proteins (show a subset)
+      const MAX_DISPLAY_ATOMS = 2000;
+      const stride = Math.max(1, Math.ceil(atoms.length / MAX_DISPLAY_ATOMS));
+      
+      // Process atoms
+      for (let i = 0; i < atoms.length; i += stride) {
+        const atom = atoms[i];
+        
         positions.push(
           atom.position.x - this.protein.centerOfMass.x,
           atom.position.y - this.protein.centerOfMass.y,
           atom.position.z - this.protein.centerOfMass.z
         );
         
-        // Use element color
-        const color = new THREE.Color(atom.color || '#ffffff');
+        // Get color
+        const color = this._getAtomColor(atom, 'element');
         colors.push(color.r, color.g, color.b);
-      });
+      }
       
-      // Create geometry
-      const geometry = new THREE.BufferGeometry();
+      // Set attributes
       geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
       geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
       
-      // Create material
+      // Create material and points
       const material = new THREE.PointsMaterial({
         size: 0.6,
         vertexColors: true
       });
       
-      // Create point cloud
       const points = new THREE.Points(geometry, material);
+      points.name = 'FallbackPoints';
+      
+      // Add to container
       this.proteinGroup.add(points);
-      this.proteinMeshes.push(points);
+      
+      // Store for cleanup
+      this.fallbackVisualization = points;
     } catch (error) {
       console.error('Error creating fallback visualization:', error);
     }
   }
   
   /**
-   * Clear protein data and visualization
+   * Get color for atom based on scheme
    * @private
+   * @param {Object} atom - Atom object
+   * @param {string} scheme - Color scheme name
+   * @returns {THREE.Color} Color
    */
-  _clearProtein() {
-    this.protein = null;
-    this._clearVisualization();
-  }
-  
-  /**
-   * Clear current visualization
-   * @private
-   */
-  _clearVisualization() {
-    // Safe cleanup for proteinGroup
-    if (this.proteinGroup) {
-      while (this.proteinGroup.children.length > 0) {
-        const child = this.proteinGroup.children[0];
-        this.proteinGroup.remove(child);
-        
-        // Dispose of geometry and materials
-        try {
-          if (child.geometry) {
-            child.geometry.dispose();
-          }
-          
-          if (child.material) {
-            if (Array.isArray(child.material)) {
-              child.material.forEach(material => material.dispose());
-            } else {
-              child.material.dispose();
-            }
-          }
-        } catch (error) {
-          console.warn('Error disposing resources:', error);
-        }
-      }
-    }
+  _getAtomColor(atom, scheme) {
+    // Get element-based color
+    const elementColors = {
+      'H': '#FFFFFF', // White
+      'C': '#909090', // Grey
+      'N': '#3050F8', // Blue
+      'O': '#FF0D0D', // Red
+      'S': '#FFFF30', // Yellow
+      'P': '#FF8000', // Orange
+      'F': '#90E050', // Light Green
+      'CL': '#1FF01F', // Green
+      'BR': '#A62929', // Brown
+      'I': '#940094', // Purple
+      'FE': '#E06633', // Orange-brown
+      'CA': '#3DFF00', // Bright green
+      'MG': '#8AFF00'  // Yellow-green
+    };
     
-    this.proteinMeshes = [];
-    this.bondMeshes = [];
-  }
-  
-  /**
-   * Update protein visualization
-   * @private
-   */
-  _updateProteinVisualization() {
-    if (!this.protein) return;
-    
-    try {
-      // Clear existing visualization
-      this._clearVisualization();
-      
-      // Recreate visualization
-      this._createVisualization();
-    } catch (error) {
-      console.error('Error updating visualization:', error);
-      this._createFallbackVisualization();
-    }
+    const colorHex = elementColors[atom.element] || '#FFFF00';
+    return new THREE.Color(colorHex);
   }
   
   /**
@@ -894,11 +627,11 @@ export class ProteinViewer {
    * @private
    */
   _centerCamera() {
-    if (!this.protein || !this.protein.boundingBox) return;
+    if (!this.protein) return;
     
-    try {
-      const boundingBox = this.protein.boundingBox.clone();
-      
+    const boundingBox = this.protein.boundingBox;
+    
+    if (boundingBox) {
       // Get center and size
       const center = new THREE.Vector3();
       boundingBox.getCenter(center);
@@ -926,8 +659,86 @@ export class ProteinViewer {
       
       // Look at center
       this.camera.lookAt(center);
+    }
+  }
+  
+  /**
+   * Clear protein data and visualization
+   * @private
+   */
+  _clearProtein() {
+    this.protein = null;
+    this._clearVisualization();
+  }
+  
+  /**
+   * Clear current visualization
+   * @private
+   */
+  _clearVisualization() {
+    // Remove active visualization if any
+    if (this.activeVisualization) {
+      if (this.activeVisualization.dispose) {
+        this.activeVisualization.dispose();
+      }
+      
+      if (this.activeVisualization.object) {
+        this.proteinGroup.remove(this.activeVisualization.object);
+      }
+      
+      this.activeVisualization = null;
+    }
+    
+    // Remove fallback visualization if any
+    if (this.fallbackVisualization) {
+      if (this.fallbackVisualization.geometry) {
+        this.fallbackVisualization.geometry.dispose();
+      }
+      
+      if (this.fallbackVisualization.material) {
+        this.fallbackVisualization.material.dispose();
+      }
+      
+      this.proteinGroup.remove(this.fallbackVisualization);
+      this.fallbackVisualization = null;
+    }
+    
+    // Clear all remaining children from protein group
+    while (this.proteinGroup.children.length > 0) {
+      const child = this.proteinGroup.children[0];
+      this.proteinGroup.remove(child);
+      
+      // Dispose of resources
+      if (child.geometry) {
+        child.geometry.dispose();
+      }
+      
+      if (child.material) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach(m => m.dispose());
+        } else {
+          child.material.dispose();
+        }
+      }
+    }
+  }
+  
+  /**
+   * Update protein visualization
+   * @private
+   */
+  _updateProteinVisualization() {
+    if (!this.protein) return;
+    
+    try {
+      // Clear existing visualization
+      this._clearVisualization();
+      
+      // Recreate visualization
+      this._createVisualization();
     } catch (error) {
-      console.warn('Error centering camera:', error);
+      console.error('Error updating visualization:', error);
+      this._createFallbackVisualization();
     }
   }
   
@@ -960,7 +771,14 @@ export class ProteinViewer {
    * @private
    */
   _handleResize() {
-    this._updateRendererSize();
+    if (this.resizeTimer) {
+      clearTimeout(this.resizeTimer);
+    }
+    
+    // Throttle resize events
+    this.resizeTimer = setTimeout(() => {
+      this._updateRendererSize();
+    }, 100);
   }
   
   /**
@@ -969,6 +787,13 @@ export class ProteinViewer {
    */
   _handleVisibilityChange() {
     this.isVisible = !document.hidden;
+    
+    if (this.isVisible) {
+      // Restart animation loop when becoming visible
+      if (!this.animationFrameId) {
+        this._startAnimationLoop();
+      }
+    }
   }
   
   /**
@@ -976,13 +801,55 @@ export class ProteinViewer {
    * @private
    */
   _handleContextLost() {
-    console.warn('WebGL context loss handled in protein viewer');
+    console.warn('WebGL context loss detected in main viewer');
     
     // Mark renderer as unavailable
-    this.rendererLost = true;
+    this.rendererActive = false;
+    
+    // Stop any previous recovery attempt
+    if (this.recoveryTimer) {
+      clearTimeout(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
     
     // Emit event
     this._emitEvent('contextLost');
+    
+    // Schedule recovery attempt
+    this.recoveryTimer = setTimeout(() => {
+      // Try to recover after a short delay
+      this._attemptContextRecovery();
+    }, 1000);
+  }
+  
+  /**
+   * Attempt to recover from a lost context
+   * @private
+   */
+  _attemptContextRecovery() {
+    if (this.rendererActive) return; // Already restored
+    
+    if (this.state.retryCount < this.state.maxRetries) {
+      this.state.retryCount++;
+      console.log(`Attempting context recovery (attempt ${this.state.retryCount} of ${this.state.maxRetries})...`);
+      
+      try {
+        // Try manual recovery if possible
+        if (this.renderer && RendererFactory.tryRecoverContext(this.renderer)) {
+          console.log('Manually triggered context recovery');
+        }
+      } catch (error) {
+        console.warn('Error during manual context recovery:', error);
+      }
+      
+      // Schedule another attempt if still not restored
+      this.recoveryTimer = setTimeout(() => {
+        this._attemptContextRecovery();
+      }, 2000);
+    } else {
+      console.warn('Context recovery failed after max retries');
+      this._showError('WebGL rendering error. Please try reloading the page.');
+    }
   }
   
   /**
@@ -990,15 +857,32 @@ export class ProteinViewer {
    * @private
    */
   _handleContextRestored() {
-    console.log('WebGL context restored in protein viewer');
+    console.log('WebGL context restored in main viewer');
+    
+    // Reset retry count
+    this.state.retryCount = 0;
     
     // Mark renderer as available again
-    this.rendererLost = false;
+    this.rendererActive = true;
+    
+    // Clear any recovery timers
+    if (this.recoveryTimer) {
+      clearTimeout(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
     
     try {
+      // Ensure renderer is properly sized
+      this._updateRendererSize();
+      
       // Recreate visualization if needed
       if (this.protein) {
         this._updateProteinVisualization();
+      }
+      
+      // Ensure animation loop is running
+      if (!this.animationFrameId) {
+        this._startAnimationLoop();
       }
       
       // Emit event
@@ -1123,39 +1007,12 @@ export class ProteinViewer {
   setEffectStrength(strength) {
     const value = Math.max(0, Math.min(1, strength));
     this.state.effectStrength = value;
-    this._updateEffectStrength(value);
-    this._emitEvent('effectStrengthChanged', { strength: value });
-  }
-  
-  /**
-   * Update effect strength on all materials
-   * @private
-   * @param {number} strength - Effect strength
-   */
-  _updateEffectStrength(strength) {
-    if (!this.shader) return;
     
-    try {
-      // Apply to atom meshes
-      if (this.proteinMeshes) {
-        this.proteinMeshes.forEach(mesh => {
-          if (mesh.material) {
-            this.shader.updateEffectStrength(mesh.material, strength);
-          }
-        });
-      }
-      
-      // Apply to bond meshes
-      if (this.bondMeshes) {
-        this.bondMeshes.forEach(mesh => {
-          if (mesh.material) {
-            this.shader.updateEffectStrength(mesh.material, strength);
-          }
-        });
-      }
-    } catch (error) {
-      console.warn('Error updating effect strength:', error);
+    if (this.activeVisualization && this.activeVisualization.updateEffectStrength) {
+      this.activeVisualization.updateEffectStrength(value);
     }
+    
+    this._emitEvent('effectStrengthChanged', { strength: value });
   }
   
   /**
@@ -1185,7 +1042,8 @@ export class ProteinViewer {
    * @returns {string|null} Data URL of screenshot or null if failed
    */
   takeScreenshot(options = {}) {
-    if (!this.renderer || !this.scene || !this.camera || this.rendererLost) {
+    if (!this.renderer || !this.scene || !this.camera || this.rendererActive === false) {
+      console.warn('Cannot take screenshot - renderer not ready');
       return null;
     }
     
@@ -1208,6 +1066,14 @@ export class ProteinViewer {
       } else {
         width = currentSize.width * 2;
         height = currentSize.height * 2;
+      }
+      
+      // Limit size to reasonable values to avoid context loss
+      const MAX_DIMENSION = 4096;
+      if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
+        const scale = Math.min(MAX_DIMENSION / width, MAX_DIMENSION / height);
+        width = Math.floor(width * scale);
+        height = Math.floor(height * scale);
       }
       
       // Resize renderer
@@ -1265,8 +1131,19 @@ export class ProteinViewer {
    * Dispose of viewer resources
    */
   dispose() {
-    // Stop animation
+    // Stop animation and recovery attempts
     this._stopAnimationLoop();
+    
+    if (this.recoveryTimer) {
+      clearTimeout(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
+    
+    if (this.resizeTimer) {
+      clearTimeout(this.resizeTimer);
+      this.resizeTimer = null;
+    }
+    
     this.isVisible = false;
     
     // Remove event listeners
