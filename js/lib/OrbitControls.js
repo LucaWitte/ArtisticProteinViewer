@@ -1,5 +1,9 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js';
 
+// Define missing constants from THREE to avoid bare imports
+const MOUSE = { LEFT: 0, MIDDLE: 1, RIGHT: 2 };
+const TOUCH = { ROTATE: 0, PAN: 1, DOLLY_PAN: 2, DOLLY_ROTATE: 3 };
+
 // This set of controls performs orbiting, dollying (zooming), and panning.
 // Unlike TrackballControls, it maintains the "up" direction object.up (+Y by default).
 //
