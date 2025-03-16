@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Artistic Protein Visualizer - Create beautiful 3D visualizations of protein structures">
+    <title>Artistic Protein Visualizer</title>
+    
+    <!-- Preload critical assets -->
+    <link rel="preload" href="css/main.css" as="style">
+    <link rel="preload" href="css/themes.css" as="style">
+    
+    <!-- Stylesheets -->
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/themes.css">
+    
+    <!-- Favicon -->
+    <link rel="icon" href="assets/icons/logo.svg" type="image/svg+xml">
+    
+    <!-- Detect theme preference early to avoid flash -->
+    <script>
+        // Check for saved theme preference or use OS preference
+        const savedTheme = localStorage.getItem('theme');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const theme = savedTheme || (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+    </script>
+</head>
+<body>
+    <!-- WebGL not supported error message (hidden by default) -->
+    <div id="webgl-error" class="fullscreen-message error-message" style="display: none;">
+        <div class="message-content">
+            <h2>WebGL Not Supported</h2>
+            <p>Your browser or device doesn't support WebGL, which is required for this application.</p>
+            <p>Try using a modern browser like Chrome, Firefox, or Edge.</p>
+        </div>
+    </div>
+    
+    <!-- Loading screen (visible by default) -->
+    <div id="loading-screen" class="fullscreen-message">
+        <div class="message-content">
+            <img src="assets/images/loading.svg" alt="Loading" class="loading-spinner">
+            <h2>Loading Protein Visualizer</h2>
+            <div class="progress-container">
+                <div id="loading-progress-bar" class="progress-bar"></div>
+            </div>
+            <p id="loading-status">Initializing...</p>
+        </div>
+    </div>
+    
+    <!-- Main application container -->
+    <div id="app-container">
+        <!-- Header with controls -->
+        <header class="app-header">
+            <div class="logo-container">
+                <img src="assets/icons/logo.svg" alt="Logo" class="app-logo">
+                <h1>Artistic Protein Visualizer</h1>
+            </div>
+            
+            <div class="header-controls">
+                <button id="file-upload-btn" class="btn primary-btn">
+                    <span class="btn-icon">↑</span>
+                    Load PDB
+                </button>
+                <input type="file" id="pdb-file-input" accept=".pdb" style="display: none;">
+                
+                <div class="theme-toggle-container">
+                    <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme">
+                        <span class="theme-toggle-icon"></span>
+                    </button>
+                </div>
+            </div>
+        </header>
+        
+        <!-- Main content area with viewport and control panel -->
+        <main class="main-content">
+            <!-- 3D viewport -->
+            <div id="viewport-container" class="viewport-container">
+                <canvas id="protein-viewport"></canvas>
+            </div>
+            
+            <!-- Control panel -->
+            <div id="control-panel" class="control-panel">
+                <div class="panel-section">
+                    <h3>Visualization Style</h3>
+                    <div class="control-group">
+                        <button class="style-btn" data-style="ball-stick">Ball & Stick</button>
+                        <button class="style-btn" data-style="ribbon">Ribbon</button>
+                        <button class="style-btn" data-style="surface">Surface</button>
+                    </div>
+                </div>
+                
+                <div class="panel-section">
+                    <h3>Appearance</h3>
+                    <div class="control-group">
+                        <label for="color-scheme">Color Scheme</label>
+                        <select id="color-scheme" class="select-control">
+                            <option value="element">Element</option>
+                            <option value="chain">Chain</option>
+                            <option value="residue">Residue Type</option>
+                            <option value="rainbow">Rainbow</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="background-color">Background</label>
+                        <input type="color" id="background-color" class="color-control">
+                    </div>
+                </div>
+                
+                <div class="panel-section">
+                    <h3>Artistic Effects</h3>
+                    <div class="control-group">
+                        <label for="shader-effect">Shader Style</label>
+                        <select id="shader-effect" class="select-control">
+                            <option value="standard">Standard</option>
+                            <option value="toon">Toon/Cel</option>
+                            <option value="glow">Glow Effect</option>
+                            <option value="outline">Outline</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="effect-strength">Effect Strength</label>
+                        <input type="range" id="effect-strength" min="0" max="100" value="50" class="slider-control">
+                    </div>
+                </div>
+                
+                <div class="panel-section">
+                    <h3>Export</h3>
+                    <div class="control-group">
+                        <button id="export-btn" class="btn secondary-btn">
+                            <span class="btn-icon">↓</span>
+                            Export Image
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </main>
+        
+        <!-- Footer -->
+        <footer class="app-footer">
+            <p>Artistic Protein Visualizer &copy; 2025</p>
+        </footer>
+    </div>
+    
+    <!-- Main application script (type="module" for ES6 modules) -->
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
