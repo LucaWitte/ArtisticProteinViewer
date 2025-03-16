@@ -43,7 +43,8 @@ export class Controls {
     this.state = {
       isRotating: false,
       isPanning: false,
-      isZooming: false
+      isZooming: false,
+      isInteracting: false
     };
   }
   
@@ -80,8 +81,8 @@ export class Controls {
     // Set initial target to origin
     this.controls.target.set(0, 0, 0);
     
-    // Update the controls once to apply settings
-    this.controls.update();
+    // Setup throttling for performance during interactions
+    this._setupThrottling();
   }
   
   /**
@@ -138,13 +139,64 @@ export class Controls {
       this._notifyInteractionEnd('touch');
     });
     
-    // Handle keyboard controls
-    window.addEventListener('keydown', (event) => {
-      // Reset view on 'R' key
-      if (event.key.toLowerCase() === 'r') {
-        this.resetView();
-      }
+    // Handle control change event
+    this.controls.addEventListener('change', () => {
+      this._handleControlChange();
     });
+  }
+  
+  /**
+   * Setup performance throttling during interactions
+   * @private
+   */
+  _setupThrottling() {
+    // Only implement if throttling is enabled in config
+    if (!CONFIG.PERFORMANCE.THROTTLE_RENDERING_ON_ROTATE) {
+      return;
+    }
+    
+    this.performanceMode = false;
+    
+    // Method to enter performance mode
+    this.enterPerformanceMode = () => {
+      if (!this.performanceMode) {
+        this.performanceMode = true;
+        if (this.onPerformanceModeChange) {
+          this.onPerformanceModeChange(true, CONFIG.PERFORMANCE.THROTTLE_FACTOR);
+        }
+      }
+    };
+    
+    // Method to exit performance mode
+    this.exitPerformanceMode = () => {
+      if (this.performanceMode) {
+        this.performanceMode = false;
+        if (this.onPerformanceModeChange) {
+          this.onPerformanceModeChange(false, 1.0);
+        }
+      }
+    };
+    
+    // Set up timers for delayed exit from performance mode
+    this._performanceModeTimer = null;
+  }
+  
+  /**
+   * Handle control change event
+   * @private
+   */
+  _handleControlChange() {
+    // Enter performance mode during interaction
+    if (CONFIG.PERFORMANCE.THROTTLE_RENDERING_ON_ROTATE && 
+        (this.state.isRotating || this.state.isPanning || this.state.isZooming)) {
+      this.enterPerformanceMode();
+      
+      // Reset exit timer
+      clearTimeout(this._performanceModeTimer);
+      this._performanceModeTimer = setTimeout(() => {
+        this.exitPerformanceMode();
+      }, 500); // Exit performance mode after 500ms of inactivity
+    }
   }
   
   /**
@@ -155,6 +207,11 @@ export class Controls {
   _notifyInteractionStart(type) {
     if (this.onInteractionStart) {
       this.onInteractionStart(type);
+    }
+    
+    // Enter performance mode if throttling is enabled
+    if (CONFIG.PERFORMANCE.THROTTLE_RENDERING_ON_ROTATE) {
+      this.enterPerformanceMode();
     }
   }
   
@@ -167,6 +224,14 @@ export class Controls {
     if (this.onInteractionEnd) {
       this.onInteractionEnd(type);
     }
+    
+    // Exit performance mode with a delay to ensure smooth transition
+    if (CONFIG.PERFORMANCE.THROTTLE_RENDERING_ON_ROTATE) {
+      clearTimeout(this._performanceModeTimer);
+      this._performanceModeTimer = setTimeout(() => {
+        this.exitPerformanceMode();
+      }, 200);
+    }
   }
   
   /**
@@ -174,7 +239,7 @@ export class Controls {
    * Must be called in the animation loop for smooth damping
    */
   update() {
-    if (this.controls.enabled && this.options.enableDamping) {
+    if (this.controls.enabled) {
       this.controls.update();
     }
   }
@@ -220,7 +285,6 @@ export class Controls {
     
     // Position the camera along the positive z-axis
     const offset = new THREE.Vector3(0, 0, distance);
-    offset.applyQuaternion(this.camera.quaternion);
     offset.add(center);
     
     // Set camera position
@@ -232,82 +296,9 @@ export class Controls {
   }
   
   /**
-   * Reset view to default position
-   * If a bounding box is available, it will fit to it,
-   * otherwise it will reset to a default position
-   */
-  resetView() {
-    if (this.lastBoundingBox) {
-      this.resetPosition(this.lastBoundingBox);
-    } else {
-      // Reset to default position
-      this.camera.position.set(0, 0, 50);
-      this.setTarget(0, 0, 0);
-    }
-  }
-  
-  /**
-   * Rotate camera to a specific view preset
-   * @param {string} preset - View preset name ('top', 'bottom', 'left', 'right', 'front', 'back')
-   * @param {THREE.Box3} [boundingBox] - Optional bounding box to maintain distance
-   */
-  setViewPreset(preset, boundingBox) {
-    if (boundingBox) {
-      this.lastBoundingBox = boundingBox;
-    }
-    
-    // Get the center if a bounding box is provided
-    let center = new THREE.Vector3(0, 0, 0);
-    let distance = 50;
-    
-    if (this.lastBoundingBox) {
-      this.lastBoundingBox.getCenter(center);
-      
-      // Calculate appropriate distance
-      const size = new THREE.Vector3();
-      this.lastBoundingBox.getSize(size);
-      const maxDim = Math.max(size.x, size.y, size.z);
-      const fov = this.camera.fov * (Math.PI / 180);
-      distance = (maxDim / 2) / Math.tan(fov / 2) * 1.2;
-    }
-    
-    // Set target to center
-    this.setTarget(center.x, center.y, center.z);
-    
-    // Position camera based on preset
-    switch (preset.toLowerCase()) {
-      case 'top':
-        this.camera.position.set(center.x, center.y + distance, center.z);
-        break;
-      case 'bottom':
-        this.camera.position.set(center.x, center.y - distance, center.z);
-        break;
-      case 'left':
-        this.camera.position.set(center.x - distance, center.y, center.z);
-        break;
-      case 'right':
-        this.camera.position.set(center.x + distance, center.y, center.z);
-        break;
-      case 'front':
-        this.camera.position.set(center.x, center.y, center.z + distance);
-        break;
-      case 'back':
-        this.camera.position.set(center.x, center.y, center.z - distance);
-        break;
-      default:
-        console.warn(`Unknown view preset: ${preset}`);
-        return;
-    }
-    
-    // Look at center and update controls
-    this.camera.lookAt(center);
-    this.controls.update();
-  }
-  
-  /**
-   * Enable or disable auto rotation
-   * @param {boolean} enabled - Whether auto rotation should be enabled
-   * @param {number} [speed=2.0] - Rotation speed
+   * Enable or disable auto-rotation of the camera
+   * @param {boolean} enabled - Whether auto-rotation should be enabled
+   * @param {number} [speed=2.0] - Rotation speed in radians per second
    */
   setAutoRotate(enabled, speed = 2.0) {
     this.controls.autoRotate = enabled;
@@ -333,9 +324,6 @@ export class Controls {
         this.controls[key] = options[key];
       }
     });
-    
-    // Store updated options
-    this.options = { ...this.options, ...options };
     
     // Force an update
     this.controls.update();
@@ -366,22 +354,29 @@ export class Controls {
   }
   
   /**
+   * Register callback for performance mode changes
+   * @param {Function} callback - Function to call when performance mode changes
+   */
+  onPerfModeChange(callback) {
+    this.onPerformanceModeChange = callback;
+  }
+  
+  /**
    * Dispose of controls resources
    * Important for memory management when destroying the application
    */
   dispose() {
-    // Remove event listeners
-    window.removeEventListener('mouseup', this._mouseUpHandler);
-    window.removeEventListener('keydown', this._keyDownHandler);
-    
-    // Dispose of controls
+    // Remove all event listeners
     this.controls.dispose();
     
+    // Clear timers
+    clearTimeout(this._zoomTimer);
+    clearTimeout(this._performanceModeTimer);
+    
     // Clear references
-    this.camera = null;
-    this.domElement = null;
-    this.controls = null;
     this.onInteractionStart = null;
     this.onInteractionEnd = null;
+    this.onPerformanceModeChange = null;
+    this.controls = null;
   }
 }
