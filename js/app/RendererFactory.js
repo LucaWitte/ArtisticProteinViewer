@@ -6,6 +6,7 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js';
 import { WebGLDetector } from '../utils/WebGLDetector.js';
 import { CONFIG } from '../config.js';
+import { PDBLoader } from '../loaders/PDBLoader.js';
 
 export class RendererFactory {
   /**
