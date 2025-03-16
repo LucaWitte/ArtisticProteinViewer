@@ -1,0 +1,120 @@
+/* 
+ * themes.css - Light and dark mode theming for Artistic Protein Visualizer
+ */
+
+/* ================ Light Theme (Default) ================ */
+:root {
+  /* Colors */
+  --primary: #2563eb;
+  --primary-rgb: 37, 99, 235;
+  --primary-hover: #1d4ed8;
+  --on-primary: #ffffff;
+  
+  --background: #f8f9fa;
+  --surface: #ffffff;
+  --surface-variant: #e9ecef;
+  --surface-variant-hover: #dee2e6;
+  
+  --text-primary: #212529;
+  --text-secondary: #6c757d;
+  
+  --border: #dee2e6;
+  --divider: rgba(0, 0, 0, 0.1);
+  
+  --error: #dc2626;
+  --success: #16a34a;
+  --warning: #ca8a04;
+  
+  --input-background: #ffffff;
+  
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.05);
+  
+  /* Transitions */
+  --transition-slow: 0.3s ease;
+  --transition-normal: 0.2s ease;
+  --transition-fast: 0.1s ease;
+}
+
+/* ================ Dark Theme ================ */
+[data-theme="dark"] {
+  /* Colors */
+  --primary: #3b82f6;
+  --primary-rgb: 59, 130, 246;
+  --primary-hover: #2563eb;
+  --on-primary: #ffffff;
+  
+  --background: #121212;
+  --surface: #1e1e1e;
+  --surface-variant: #2d2d2d;
+  --surface-variant-hover: #3a3a3a;
+  
+  --text-primary: #e5e7eb;
+  --text-secondary: #9ca3af;
+  
+  --border: #333333;
+  --divider: rgba(255, 255, 255, 0.1);
+  
+  --error: #f87171;
+  --success: #4ade80;
+  --warning: #fcd34d;
+  
+  --input-background: #2d2d2d;
+  
+  /* Shadows - more subtle in dark mode */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.2);
+}
+
+/* ================ Theme-specific Element Styling ================ */
+
+/* Theme toggle icon */
+[data-theme="light"] .theme-toggle-icon {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23212529' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='5'%3E%3C/circle%3E%3Cline x1='12' y1='1' x2='12' y2='3'%3E%3C/line%3E%3Cline x1='12' y1='21' x2='12' y2='23'%3E%3C/line%3E%3Cline x1='4.22' y1='4.22' x2='5.64' y2='5.64'%3E%3C/line%3E%3Cline x1='18.36' y1='18.36' x2='19.78' y2='19.78'%3E%3C/line%3E%3Cline x1='1' y1='12' x2='3' y2='12'%3E%3C/line%3E%3Cline x1='21' y1='12' x2='23' y2='12'%3E%3C/line%3E%3Cline x1='4.22' y1='19.78' x2='5.64' y2='18.36'%3E%3C/line%3E%3Cline x1='18.36' y1='5.64' x2='19.78' y2='4.22'%3E%3C/line%3E%3C/svg%3E");
+}
+
+[data-theme="dark"] .theme-toggle-icon {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e5e7eb' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z'%3E%3C/path%3E%3C/svg%3E");
+}
+
+/* Loading spinner colors */
+[data-theme="light"] .loading-spinner {
+  filter: none;
+}
+
+[data-theme="dark"] .loading-spinner {
+  filter: invert(1);
+}
+
+/* Button hover states */
+[data-theme="dark"] .btn:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* Scrollbar customization */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface-variant);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--primary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--primary-hover);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-color: var(--primary) var(--surface-variant);
+  scrollbar-width: thin;
+}
