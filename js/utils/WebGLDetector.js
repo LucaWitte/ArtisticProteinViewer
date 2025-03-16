@@ -1,6 +1,6 @@
 /**
- * WebGLDetector.js - Utility for detecting WebGL support and capabilities
- * Provides methods to check WebGL compatibility and gather GPU capabilities
+ * WebGLDetector.js - Improved utility for detecting WebGL support and capabilities
+ * Provides robust methods to check WebGL compatibility and gracefully handle context issues
  */
 
 import { CONFIG } from '../config.js';
@@ -15,9 +15,11 @@ export class WebGLDetector {
       const canvas = document.createElement('canvas');
       return !!(
         window.WebGLRenderingContext &&
-        (canvas.getContext('webgl') || canvas.getContext('experimental-webgl'))
+        (canvas.getContext('webgl', { failIfMajorPerformanceCaveat: false }) || 
+         canvas.getContext('experimental-webgl', { failIfMajorPerformanceCaveat: false }))
       );
     } catch (error) {
+      console.warn('WebGL detection error:', error);
       return false;
     }
   }
@@ -29,8 +31,105 @@ export class WebGLDetector {
   static isWebGL2Available() {
     try {
       const canvas = document.createElement('canvas');
-      return !!(window.WebGL2RenderingContext && canvas.getContext('webgl2'));
+      return !!(window.WebGL2RenderingContext && 
+                canvas.getContext('webgl2', { failIfMajorPerformanceCaveat: false }));
     } catch (error) {
+      console.warn('WebGL2 detection error:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Create a canvas and get WebGL context for testing
+   * @private
+   * @returns {Object} Object containing context and canvas or null if not available
+   */
+  static _createTestContext() {
+    try {
+      // Create a canvas for testing
+      const canvas = document.createElement('canvas');
+      canvas.width = 1;
+      canvas.height = 1;
+      
+      // Try to get a WebGL2 context first
+      let gl = canvas.getContext('webgl2', { failIfMajorPerformanceCaveat: false });
+      let contextVersion = 2;
+      
+      // Fall back to WebGL 1 if WebGL 2 is not available
+      if (!gl) {
+        gl = canvas.getContext('webgl', { failIfMajorPerformanceCaveat: false }) || 
+             canvas.getContext('experimental-webgl', { failIfMajorPerformanceCaveat: false });
+        contextVersion = 1;
+      }
+      
+      if (!gl) {
+        return null;
+      }
+      
+      return { gl, canvas, contextVersion };
+    } catch (error) {
+      console.warn('Error creating WebGL test context:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Safely get renderer info without deprecated extensions
+   * @private
+   * @param {WebGLRenderingContext} gl - WebGL context
+   * @returns {Object} Object containing vendor and renderer info
+   */
+  static _getRendererInfo(gl) {
+    const info = {
+      vendor: 'Unknown',
+      renderer: 'Unknown'
+    };
+    
+    try {
+      // Try the standard way first
+      info.vendor = gl.getParameter(gl.VENDOR);
+      info.renderer = gl.getParameter(gl.RENDERER);
+      
+      // If we got actual values, return them
+      if (info.vendor !== '' && info.renderer !== '') {
+        return info;
+      }
+      
+      // Try with WEBGL_debug_renderer_info extension only as fallback
+      // Note: This extension is deprecated in some browsers
+      try {
+        const debugExt = gl.getExtension('WEBGL_debug_renderer_info');
+        if (debugExt) {
+          if (info.vendor === '') {
+            info.vendor = gl.getParameter(debugExt.UNMASKED_VENDOR_WEBGL) || 'Unknown';
+          }
+          if (info.renderer === '') {
+            info.renderer = gl.getParameter(debugExt.UNMASKED_RENDERER_WEBGL) || 'Unknown';
+          }
+        }
+      } catch (extError) {
+        console.warn('WEBGL_debug_renderer_info extension error (deprecated in some browsers)');
+      }
+    } catch (error) {
+      console.warn('Error getting renderer info:', error);
+    }
+    
+    return info;
+  }
+  
+  /**
+   * Safely test for WebGL extension
+   * @private
+   * @param {WebGLRenderingContext} gl - WebGL context
+   * @param {string} extensionName - Name of the extension to test
+   * @returns {boolean} True if extension is supported
+   */
+  static _hasExtension(gl, extensionName) {
+    try {
+      const ext = gl.getExtension(extensionName);
+      return !!ext;
+    } catch (error) {
+      console.warn(`Error testing for extension ${extensionName}:`, error);
       return false;
     }
   }
@@ -40,89 +139,103 @@ export class WebGLDetector {
    * @returns {Object} Object containing WebGL capabilities
    */
   static detectCapabilities() {
-    const capabilities = {};
-    let gl;
+    // Default fallback capabilities for when detection fails
+    const fallbackCapabilities = {
+      webGLVersion: 1,
+      vendor: 'Unknown',
+      renderer: 'Unknown',
+      maxTextureSize: 2048,
+      maxCubeMapTextureSize: 2048,
+      maxRenderBufferSize: 2048,
+      instancedArrays: false,
+      floatTextures: false,
+      anisotropy: false,
+      maxAnisotropy: 1,
+      depthTexture: false,
+      standardDerivatives: false,
+      vertexArrayObject: false,
+      sRGBTextures: false,
+      isMobile: WebGLDetector.isMobileDevice()
+    };
+    
+    // Get test context
+    const test = WebGLDetector._createTestContext();
+    
+    if (!test || !test.gl) {
+      console.warn('WebGL context creation failed, using fallback capabilities');
+      WebGLDetector._adjustPerformanceSettings(fallbackCapabilities);
+      CONFIG.CAPABILITIES = {
+        ...CONFIG.CAPABILITIES,
+        ...fallbackCapabilities
+      };
+      return fallbackCapabilities;
+    }
+    
+    const { gl, contextVersion } = test;
     
     try {
-      // Try to get WebGL2 context first
-      const canvas = document.createElement('canvas');
-      gl = canvas.getContext('webgl2') || canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+      // Detect capabilities
+      const capabilities = {
+        webGLVersion: contextVersion,
+        ...WebGLDetector._getRendererInfo(gl),
+        
+        // Get texture size limits
+        maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+        maxCubeMapTextureSize: gl.getParameter(gl.MAX_CUBE_MAP_TEXTURE_SIZE),
+        maxRenderBufferSize: gl.getParameter(gl.MAX_RENDERBUFFER_SIZE),
+        
+        // Check for hardware instancing
+        instancedArrays: 
+          contextVersion === 2 || 
+          WebGLDetector._hasExtension(gl, 'ANGLE_instanced_arrays'),
+        
+        // Check for float textures
+        floatTextures: 
+          contextVersion === 2 || 
+          WebGLDetector._hasExtension(gl, 'OES_texture_float'),
+        
+        // Check for anisotropic filtering
+        anisotropy: WebGLDetector._hasExtension(gl, 'EXT_texture_filter_anisotropic'),
+        
+        // Check for depth texture support
+        depthTexture: 
+          contextVersion === 2 || 
+          WebGLDetector._hasExtension(gl, 'WEBGL_depth_texture'),
+        
+        // Check for standard derivatives (required for normal mapping)
+        standardDerivatives: 
+          contextVersion === 2 || 
+          WebGLDetector._hasExtension(gl, 'OES_standard_derivatives'),
+        
+        // Check for vertex array objects
+        vertexArrayObject: 
+          contextVersion === 2 || 
+          WebGLDetector._hasExtension(gl, 'OES_vertex_array_object'),
+        
+        // Check for sRGB texture support
+        sRGBTextures: 
+          contextVersion === 2 || 
+          WebGLDetector._hasExtension(gl, 'EXT_sRGB'),
+        
+        // Detect mobile/desktop device type
+        isMobile: WebGLDetector.isMobileDevice()
+      };
       
-      if (!gl) {
-        throw new Error('WebGL not supported');
-      }
-      
-      // Detect WebGL version
-      capabilities.webGLVersion = gl instanceof WebGL2RenderingContext ? 2 : 1;
-      
-      // Get renderer info
-      const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-      if (debugInfo) {
-        capabilities.vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
-        capabilities.renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+      // Get max anisotropy if supported
+      if (capabilities.anisotropy) {
+        const anisotropyExt = 
+          gl.getExtension('EXT_texture_filter_anisotropic') || 
+          gl.getExtension('MOZ_EXT_texture_filter_anisotropic') || 
+          gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic');
+        
+        if (anisotropyExt) {
+          capabilities.maxAnisotropy = gl.getParameter(anisotropyExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
+        } else {
+          capabilities.maxAnisotropy = 1;
+        }
       } else {
-        capabilities.vendor = gl.getParameter(gl.VENDOR);
-        capabilities.renderer = gl.getParameter(gl.RENDERER);
-      }
-      
-      // Get texture size limits
-      capabilities.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-      capabilities.maxCubeMapTextureSize = gl.getParameter(gl.MAX_CUBE_MAP_TEXTURE_SIZE);
-      capabilities.maxRenderBufferSize = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE);
-      
-      // Check for hardware instancing
-      const instancedArrays = 
-        capabilities.webGLVersion === 2 || 
-        gl.getExtension('ANGLE_instanced_arrays') || 
-        gl.getExtension('EXT_instanced_arrays');
-      capabilities.instancedArrays = !!instancedArrays;
-      
-      // Check for float textures
-      capabilities.floatTextures = !!(
-        gl.getExtension('OES_texture_float') || 
-        capabilities.webGLVersion === 2
-      );
-      
-      // Check for anisotropic filtering
-      const anisotropyExt = 
-        gl.getExtension('EXT_texture_filter_anisotropic') || 
-        gl.getExtension('MOZ_EXT_texture_filter_anisotropic') || 
-        gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic');
-      
-      if (anisotropyExt) {
-        capabilities.anisotropy = true;
-        capabilities.maxAnisotropy = gl.getParameter(anisotropyExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
-      } else {
-        capabilities.anisotropy = false;
         capabilities.maxAnisotropy = 1;
       }
-      
-      // Check for depth texture support
-      capabilities.depthTexture = !!(
-        capabilities.webGLVersion === 2 || 
-        gl.getExtension('WEBGL_depth_texture')
-      );
-      
-      // Check for standard derivatives (required for normal mapping)
-      capabilities.standardDerivatives = !!(
-        capabilities.webGLVersion === 2 || 
-        gl.getExtension('OES_standard_derivatives')
-      );
-      
-      // Check for vertex array objects
-      capabilities.vertexArrayObject = !!(
-        capabilities.webGLVersion === 2 || 
-        gl.getExtension('OES_vertex_array_object')
-      );
-      
-      // Check for sRGB texture support
-      capabilities.sRGBTextures = !!(
-        capabilities.webGLVersion === 2 || 
-        gl.getExtension('EXT_sRGB')
-      );
-      
-      // Detect mobile/desktop device type
-      capabilities.isMobile = WebGLDetector.isMobileDevice();
       
       // Update CONFIG with detected capabilities
       CONFIG.CAPABILITIES = {
@@ -133,26 +246,50 @@ export class WebGLDetector {
       // Adjust performance settings based on capabilities
       WebGLDetector._adjustPerformanceSettings(capabilities);
       
+      // Clean up
+      WebGLDetector._cleanupTestContext(test);
+      
+      return capabilities;
     } catch (error) {
       console.error('Error detecting WebGL capabilities:', error);
-      return null;
-    } finally {
-      // Clean up context if it was created
-      if (gl && gl.getExtension('WEBGL_lose_context')) {
-        gl.getExtension('WEBGL_lose_context').loseContext();
-      }
+      WebGLDetector._cleanupTestContext(test);
+      
+      // Use fallback values
+      WebGLDetector._adjustPerformanceSettings(fallbackCapabilities);
+      CONFIG.CAPABILITIES = {
+        ...CONFIG.CAPABILITIES,
+        ...fallbackCapabilities
+      };
+      
+      return fallbackCapabilities;
     }
+  }
+  
+  /**
+   * Clean up test context resources
+   * @private
+   * @param {Object} test - Test context object
+   */
+  static _cleanupTestContext(test) {
+    if (!test || !test.gl) return;
     
-    return capabilities;
+    try {
+      // Try to lose context explicitly to free resources
+      const loseExt = test.gl.getExtension('WEBGL_lose_context');
+      if (loseExt) {
+        loseExt.loseContext();
+      }
+    } catch (error) {
+      console.warn('Error cleaning up test context:', error);
+    }
   }
   
   /**
    * Check if the device is a mobile device
-   * Based on screen size, touch capability and user agent
    * @returns {boolean} True if the device is likely a mobile device
    */
   static isMobileDevice() {
-    // Check for touch capability as a primary indicator
+    // Use multiple detection methods for better accuracy
     const hasTouchScreen = (
       'ontouchstart' in window || 
       navigator.maxTouchPoints > 0 || 
@@ -183,9 +320,18 @@ export class WebGLDetector {
       CONFIG.RENDERER.SHADOW_MAP_ENABLED = false;
       CONFIG.RENDERER.PIXEL_RATIO = Math.min(window.devicePixelRatio, 2);
       
-      CONFIG.VISUALIZATION.BALL_STICK.SEGMENT_COUNT = 12;
-      CONFIG.VISUALIZATION.RIBBON.CURVE_SEGMENTS = 16;
-      CONFIG.VISUALIZATION.SURFACE.RESOLUTION = 1.5;
+      CONFIG.VISUALIZATION.BALL_STICK.SEGMENT_COUNT = 8;
+      CONFIG.VISUALIZATION.RIBBON.CURVE_SEGMENTS = 12;
+      CONFIG.VISUALIZATION.SURFACE.RESOLUTION = 2.0;
+    }
+    
+    // If WebGL version is 1, further reduce settings
+    if (capabilities.webGLVersion === 1) {
+      CONFIG.RENDERER.ANTIALIAS = false;
+      CONFIG.RENDERER.SHADOW_MAP_ENABLED = false;
+      CONFIG.VISUALIZATION.BALL_STICK.SEGMENT_COUNT = 6;
+      CONFIG.VISUALIZATION.RIBBON.CURVE_SEGMENTS = 8;
+      CONFIG.VISUALIZATION.SURFACE.RESOLUTION = 2.5;
     }
     
     // If instancing is not supported, disable it
@@ -195,7 +341,43 @@ export class WebGLDetector {
     
     // If limited texture size, adjust surface resolution
     if (capabilities.maxTextureSize < 4096) {
-      CONFIG.VISUALIZATION.SURFACE.RESOLUTION = Math.max(1.5, CONFIG.VISUALIZATION.SURFACE.RESOLUTION);
+      CONFIG.VISUALIZATION.SURFACE.RESOLUTION = Math.max(2.0, CONFIG.VISUALIZATION.SURFACE.RESOLUTION);
     }
+    
+    // If renderer is known to have issues, apply specific workarounds
+    const rendererLower = capabilities.renderer.toLowerCase();
+    
+    if (rendererLower.includes('intel') || rendererLower.includes('hd graphics')) {
+      // Intel integrated graphics often has issues with complex shaders
+      CONFIG.RENDERER.ANTIALIAS = false;
+      CONFIG.RENDERER.SHADOW_MAP_ENABLED = false;
+      CONFIG.VISUALIZATION.BALL_STICK.INSTANCING_ENABLED = false;
+      CONFIG.VISUALIZATION.SURFACE.RESOLUTION = 3.0;
+    }
+  }
+  
+  /**
+   * Setup context loss handling for a renderer
+   * @param {THREE.WebGLRenderer} renderer - Three.js renderer to monitor
+   * @param {Function} onLost - Callback when context is lost
+   * @param {Function} onRestored - Callback when context is restored
+   */
+  static setupContextHandling(renderer, onLost, onRestored) {
+    if (!renderer || !renderer.domElement) return;
+    
+    // Handle WebGL context loss
+    renderer.domElement.addEventListener('webglcontextlost', (event) => {
+      console.warn('WebGL context lost');
+      event.preventDefault();
+      
+      if (onLost) onLost();
+    }, false);
+    
+    // Handle WebGL context restoration
+    renderer.domElement.addEventListener('webglcontextrestored', () => {
+      console.log('WebGL context restored');
+      
+      if (onRestored) onRestored();
+    }, false);
   }
 }
