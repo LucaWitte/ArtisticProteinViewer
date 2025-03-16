@@ -25,6 +25,14 @@
         const theme = savedTheme || (prefersDark ? 'dark' : 'light');
         document.documentElement.setAttribute('data-theme', theme);
     </script>
+
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js"
+          }
+        }
+    </script>
 </head>
 <body>
     <!-- WebGL not supported error message (hidden by default) -->
