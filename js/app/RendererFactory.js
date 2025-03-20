@@ -31,18 +31,21 @@ export class RendererFactory {
     // Set default options with safe fallbacks
     const finalOptions = {
       canvas: options.container,
-      antialias: options.antialias !== undefined ? options.antialias : CONFIG.RENDERER.ANTIALIAS,
+      antialias: options.antialias !== undefined ? options.antialias : false, // Disable by default for better compatibility
       alpha: options.alpha !== undefined ? options.alpha : CONFIG.RENDERER.ALPHA,
       preserveDrawingBuffer: true, // Required for screenshots
       powerPreference: 'default', // Use 'default' for wider compatibility
       failIfMajorPerformanceCaveat: false, // More permissive
       precision: capabilities.isMobile ? 'mediump' : 'highp', // Lower precision on mobile
+      depth: true,
+      stencil: false, // Disable stencil buffer if not needed
     };
     
-    // Only add log depth buffer for WebGL2 to avoid compatibility issues
-    if (capabilities.webGLVersion === 2) {
-      finalOptions.logarithmicDepthBuffer = true;
-    }
+    // Log renderer creation attempt
+    console.log("Attempting to create WebGL renderer with options:", {
+      ...finalOptions,
+      canvas: finalOptions.canvas ? "Canvas element" : "No canvas"
+    });
     
     // First try with normal settings
     let renderer = null;
@@ -108,7 +111,7 @@ export class RendererFactory {
     try {
       // Set pixel ratio (limiting for performance on high-DPI displays)
       const pixelRatio = options.pixelRatio || CONFIG.RENDERER.PIXEL_RATIO;
-      const safeDPR = Math.min(pixelRatio, CONFIG.RENDERER.MAX_PIXEL_RATIO);
+      const safeDPR = Math.min(pixelRatio, capabilities.isMobile ? 1.0 : 2.0);
       renderer.setPixelRatio(safeDPR);
       
       // Set appropriate size
@@ -119,10 +122,8 @@ export class RendererFactory {
       }
       
       // Configure renderer properties based on capabilities
-      // Only enable shadows on more powerful devices
-      renderer.shadowMap.enabled = CONFIG.RENDERER.SHADOW_MAP_ENABLED && 
-                                 !capabilities.isMobile &&
-                                 capabilities.webGLVersion === 2;
+      // Disable shadows on all devices initially for better performance
+      renderer.shadowMap.enabled = false;
       
       // Use a simpler shadow map type for better compatibility
       renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -136,15 +137,9 @@ export class RendererFactory {
         renderer.outputColorSpace = THREE.SRGBColorSpace;
       }
       
-      // Only enable tone mapping if device is capable
-      if (!capabilities.isMobile) {
-        renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        renderer.toneMappingExposure = 1.0;
-      } else {
-        // Simpler tone mapping for mobile
-        renderer.toneMapping = THREE.ReinhardToneMapping;
-        renderer.toneMappingExposure = 1.0;
-      }
+      // Use simpler tone mapping for all devices
+      renderer.toneMapping = THREE.ReinhardToneMapping;
+      renderer.toneMappingExposure = 1.0;
       
       // Set clear color
       renderer.setClearColor(CONFIG.SCENE.BACKGROUND_COLOR, 1.0);
@@ -152,11 +147,28 @@ export class RendererFactory {
       // Enable auto clearing
       renderer.autoClear = true;
       
+      // Disable polygon offset to avoid z-fighting
+      renderer.setPolygonOffset(false);
+      
       // Set info for debugging
       renderer.info.autoReset = true;
       
+      // Force memory release
+      renderer.forceContextLoss = function() {
+        const contextLossExt = this.getContext().getExtension('WEBGL_lose_context');
+        if (contextLossExt) {
+          contextLossExt.loseContext();
+        }
+      };
+      
       // Initial render to ensure context is created properly
-      renderer.clear();
+      try {
+        renderer.clear();
+      } catch (e) {
+        console.warn("Initial clear failed, but continuing:", e);
+      }
+      
+      console.log("WebGL renderer configured successfully");
     } catch (error) {
       console.warn('Error during renderer configuration:', error);
       // Continue despite errors - partial configuration is better than none
@@ -175,23 +187,29 @@ export class RendererFactory {
     
     // Handle WebGL context loss
     renderer.domElement.addEventListener('webglcontextlost', (event) => {
-      console.warn('WebGL context lost in RendererFactory');
-      // This is critical - without it, context restoration won't happen
-      event.preventDefault(); 
+      console.warn('WebGL context loss detected in RendererFactory');
+      event.preventDefault(); // This is critical - without it, context restoration won't happen
+      
+      // Store timestamp for debugging
+      renderer._contextLostTime = Date.now();
       
       if (onLost) onLost();
     }, false);
     
     // Handle WebGL context restoration
-    renderer.domElement.addEventListener('webglcontextrestored', () => {
-      console.log('WebGL context restored in RendererFactory');
+    renderer.domElement.addEventListener('webglcontextrestored', (event) => {
+      const restorationTime = Date.now();
+      const timeSinceLoss = renderer._contextLostTime ? 
+        (restorationTime - renderer._contextLostTime) : 'unknown';
+      
+      console.log(`WebGL context restored in RendererFactory after ${timeSinceLoss}ms`);
       
       // Ensure we create a clean slate
       try {
         // Clear rendering state
         renderer.clear();
         
-        // Force reset some internal state - non-standard but helps
+        // Force reset some internal state
         if (renderer.info) {
           renderer.info.reset();
         }
@@ -204,7 +222,10 @@ export class RendererFactory {
         console.warn('Error during context restoration cleanup:', error);
       }
       
-      if (onRestored) onRestored();
+      // Small delay before calling the restoration callback
+      setTimeout(() => {
+        if (onRestored) onRestored();
+      }, 100);
     }, false);
     
     // Add experimental context handler using extension
@@ -216,6 +237,16 @@ export class RendererFactory {
         if (loseContextExt) {
           // Store the extension for potential manual recovery
           renderer._loseContextExt = loseContextExt;
+          
+          // Add a method to force context restoration
+          renderer.forceContextRestoration = function() {
+            if (this._loseContextExt) {
+              console.log("Manually forcing context restoration");
+              this._loseContextExt.restoreContext();
+              return true;
+            }
+            return false;
+          };
         }
       }
     } catch (error) {
@@ -277,17 +308,8 @@ export class RendererFactory {
     );
     directionalLight.position.set(1, 1, 1).normalize();
     
-    // Only enable shadows if configured
-    directionalLight.castShadow = CONFIG.RENDERER.SHADOW_MAP_ENABLED;
-    
-    // Use modest shadow map size for performance
-    if (CONFIG.RENDERER.SHADOW_MAP_ENABLED) {
-      directionalLight.shadow.mapSize.width = 1024;
-      directionalLight.shadow.mapSize.height = 1024;
-      directionalLight.shadow.camera.near = 0.5;
-      directionalLight.shadow.camera.far = 500;
-      directionalLight.shadow.bias = -0.0001;
-    }
+    // Only enable shadows if configured - default to disabled
+    directionalLight.castShadow = false;
     
     scene.add(directionalLight);
     
@@ -314,6 +336,8 @@ export class RendererFactory {
   static tryRecoverContext(renderer) {
     if (!renderer) return false;
     
+    console.log("Attempting to recover WebGL context manually");
+    
     try {
       // First, check if the context is actually lost
       const gl = renderer.getContext();
@@ -326,11 +350,77 @@ export class RendererFactory {
           renderer._loseContextExt.restoreContext();
           return true;
         }
+      } else {
+        console.log('Context appears intact, no recovery needed');
       }
     } catch (error) {
       console.warn('Error attempting to recover context:', error);
     }
     
     return false;
+  }
+  
+  /**
+   * Determine if a renderer's context is lost
+   * @param {THREE.WebGLRenderer} renderer - Renderer to check
+   * @returns {boolean} Whether the context is lost
+   */
+  static isContextLost(renderer) {
+    if (!renderer) return true;
+    
+    try {
+      const gl = renderer.getContext();
+      return !gl || gl.isContextLost();
+    } catch (error) {
+      console.warn('Error checking context status:', error);
+      return true; // Assume lost if we can't check
+    }
+  }
+  
+  /**
+   * Create a minimal fallback renderer when full WebGL fails
+   * Used for showing basic content when context can't be restored
+   * @param {HTMLElement} container - Container element
+   * @returns {Object} Minimal renderer object
+   */
+  static createFallbackRenderer(container) {
+    // Create a minimal renderer that just displays a message
+    const canvas = container.tagName === 'CANVAS' ? 
+      container : document.createElement('canvas');
+    
+    if (container.tagName !== 'CANVAS') {
+      canvas.width = container.clientWidth || 300;
+      canvas.height = container.clientHeight || 150;
+      container.appendChild(canvas);
+    }
+    
+    // Create a 2D context as a last resort
+    const ctx = canvas.getContext('2d');
+    
+    // Return a minimal renderer-like object
+    return {
+      domElement: canvas,
+      render: function() {
+        // Clear canvas
+        ctx.fillStyle = '#1a1a2e';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw a message
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('WebGL rendering unavailable', canvas.width / 2, canvas.height / 2);
+      },
+      setSize: function(width, height) {
+        canvas.width = width;
+        canvas.height = height;
+      },
+      dispose: function() {
+        if (container.tagName !== 'CANVAS' && canvas.parentNode === container) {
+          container.removeChild(canvas);
+        }
+      }
+    };
   }
 }
