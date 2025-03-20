@@ -28,17 +28,21 @@ export class RendererFactory {
     // Detect capabilities - this helps us make appropriate renderer choices
     const capabilities = WebGLDetector.detectCapabilities();
     
+    // Override options to force more conservative settings
+    const safeOptions = {...options};
+    safeOptions.antialias = false; // Force this to false for better performance
+    
     // Set default options with safe fallbacks
     const finalOptions = {
-      canvas: options.container,
-      antialias: options.antialias !== undefined ? options.antialias : false, // Disable by default for better compatibility
-      alpha: options.alpha !== undefined ? options.alpha : CONFIG.RENDERER.ALPHA,
+      canvas: safeOptions.container,
+      antialias: false, // Always disable for better compatibility
+      alpha: safeOptions.alpha !== undefined ? safeOptions.alpha : CONFIG.RENDERER.ALPHA,
       preserveDrawingBuffer: true, // Required for screenshots
       powerPreference: 'default', // Use 'default' for wider compatibility
       failIfMajorPerformanceCaveat: false, // More permissive
       precision: capabilities.isMobile ? 'mediump' : 'highp', // Lower precision on mobile
       depth: true,
-      stencil: false, // Disable stencil buffer if not needed
+      stencil: false // Disable stencil buffer if not needed
     };
     
     // Log renderer creation attempt
@@ -81,18 +85,18 @@ export class RendererFactory {
     
     // Configure renderer with safe values if we got this far
     if (success && renderer) {
-      RendererFactory._configureRenderer(renderer, options, capabilities);
+      RendererFactory._configureRenderer(renderer, safeOptions, capabilities);
       
       // Setup context loss handling
       RendererFactory._setupContextHandling(
         renderer,
         () => {
-          if (options.onContextLost) options.onContextLost();
+          if (safeOptions.onContextLost) safeOptions.onContextLost();
         },
         () => {
           // Reconfigure after context restore
-          RendererFactory._configureRenderer(renderer, options, capabilities);
-          if (options.onContextRestored) options.onContextRestored();
+          RendererFactory._configureRenderer(renderer, safeOptions, capabilities);
+          if (safeOptions.onContextRestored) safeOptions.onContextRestored();
         }
       );
     }
@@ -111,7 +115,7 @@ export class RendererFactory {
     try {
       // Set pixel ratio (limiting for performance on high-DPI displays)
       const pixelRatio = options.pixelRatio || CONFIG.RENDERER.PIXEL_RATIO;
-      const safeDPR = Math.min(pixelRatio, capabilities.isMobile ? 1.0 : 2.0);
+      const safeDPR = Math.min(pixelRatio, capabilities.isMobile ? 1.0 : 1.5);
       renderer.setPixelRatio(safeDPR);
       
       // Set appropriate size
@@ -147,18 +151,29 @@ export class RendererFactory {
       // Enable auto clearing
       renderer.autoClear = true;
       
-      // Disable polygon offset to avoid z-fighting
-      renderer.setPolygonOffset(false);
+      // Set polygon offset properties directly (not using setPolygonOffset)
+      renderer.polygonOffset = false;
+      renderer.polygonOffsetFactor = 0;
+      renderer.polygonOffsetUnits = 0;
       
       // Set info for debugging
       renderer.info.autoReset = true;
       
       // Force memory release
       renderer.forceContextLoss = function() {
-        const contextLossExt = this.getContext().getExtension('WEBGL_lose_context');
-        if (contextLossExt) {
-          contextLossExt.loseContext();
+        try {
+          const gl = this.getContext();
+          if (gl) {
+            const contextLossExt = gl.getExtension('WEBGL_lose_context');
+            if (contextLossExt) {
+              contextLossExt.loseContext();
+              return true;
+            }
+          }
+        } catch (e) {
+          console.warn("forceContextLoss failed:", e);
         }
+        return false;
       };
       
       // Initial render to ensure context is created properly
