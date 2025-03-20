@@ -27,11 +27,41 @@ export class ProteinShader {
     this.onContextLostCallback = null;
     this.onContextRestoredCallback = null;
     
+    // Material cache for reuse
+    this.materialCache = new Map();
+    
+    // Scale down effect strengths for better performance
+    this.maxEffectStrength = 0.7;
+    
+    // Check for mobile/low-end device
+    this.isLowEndDevice = this._checkLowEndDevice();
+    
     // Bind context handlers
     this._bindContextHandlers();
     
     // Initialize shader
     this._initShader();
+    
+    // Log initialization
+    console.log(`Initialized ${this.type} protein shader`);
+  }
+  
+  /**
+   * Check if we're on a low-end device
+   * @private
+   * @returns {boolean} Whether this is a low-end device
+   */
+  _checkLowEndDevice() {
+    // Use capabilities from CONFIG if available
+    if (CONFIG.CAPABILITIES) {
+      if (CONFIG.CAPABILITIES.isMobile || CONFIG.CAPABILITIES.isLowEnd) {
+        return true;
+      }
+    }
+    
+    // Some basic checks as fallback
+    return window.navigator.userAgent.indexOf('Mobile') !== -1 || 
+           window.navigator.hardwareConcurrency < 4;
   }
   
   /**
@@ -46,6 +76,9 @@ export class ProteinShader {
       console.warn('WebGL context was lost in ProteinShader');
       event.preventDefault(); // This is critical for context restoration
       this.contextLost = true;
+      
+      // Clear material cache
+      this.materialCache.clear();
       
       // Notify that context is lost
       if (this.onContextLostCallback) {
@@ -74,219 +107,28 @@ export class ProteinShader {
    */
   _initShader() {
     try {
+      // Select the most appropriate shader type based on device capability
+      if (this.isLowEndDevice) {
+        console.log("Using simplified shaders for low-end device");
+        // Force simplified shaders on mobile/low-end devices
+        if (this.type !== 'standard') {
+          console.log(`Requested shader type '${this.type}' downgraded to 'standard' for performance`);
+          this.type = 'standard';
+        }
+      }
+      
       // Create shader uniforms
       this.uniforms = {
-        effectStrength: { value: 1.0 },
+        effectStrength: { value: 0.5 }, // Start with moderate effect strength
         time: { value: 0.0 }
       };
       
-      // Create shader chunks
-      this._createShaderChunks();
-      
       // Flag as initialized
       this.initialized = true;
-      
-      console.log(`Initialized ${this.type} protein shader`);
     } catch (error) {
       console.error('Error initializing protein shader:', error);
       this.initialized = false;
     }
-  }
-  
-  /**
-   * Create shader code chunks for different shader types
-   * @private
-   */
-  _createShaderChunks() {
-    // Common vertex shader parts
-    this.vertexShaderParts = {
-      // Common attributes and uniforms
-      common: `
-        uniform float effectStrength;
-        uniform float time;
-        
-        varying vec3 vNormal;
-        varying vec3 vViewPosition;
-      `,
-      
-      // Main vertex transformation
-      main: `
-        void main() {
-          // Calculate view-space position and normal
-          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-          vViewPosition = mvPosition.xyz;
-          vNormal = normalMatrix * normal;
-          
-          // Output position
-          gl_Position = projectionMatrix * mvPosition;
-        }
-      `
-    };
-    
-    // Common fragment shader parts
-    this.fragmentShaderParts = {
-      // Common uniforms and varyings
-      common: `
-        uniform float effectStrength;
-        uniform float time;
-        
-        varying vec3 vNormal;
-        varying vec3 vViewPosition;
-      `,
-      
-      // Lighting calculation
-      lighting: `
-        vec3 calculateLighting(vec3 normal, vec3 viewPosition, vec3 baseColor) {
-          // Ambient light
-          float ambientStrength = 0.3;
-          vec3 ambient = ambientStrength * baseColor;
-          
-          // Diffuse light
-          vec3 lightDirection = normalize(vec3(1.0, 1.0, 1.0));
-          float diff = max(dot(normal, lightDirection), 0.0);
-          vec3 diffuse = diff * baseColor;
-          
-          // Specular light
-          float specularStrength = 0.5;
-          vec3 viewDir = normalize(-viewPosition);
-          vec3 reflectDir = reflect(-lightDirection, normal);
-          float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
-          vec3 specular = specularStrength * spec * vec3(1.0);
-          
-          return ambient + diffuse + specular;
-        }
-      `,
-      
-      // Standard shader main function
-      standardMain: `
-        void main() {
-          vec3 normal = normalize(vNormal);
-          vec3 finalColor = calculateLighting(normal, vViewPosition, diffuse);
-          gl_FragColor = vec4(finalColor, opacity);
-        }
-      `,
-      
-      // Toon shader main function
-      toonMain: `
-        void main() {
-          vec3 normal = normalize(vNormal);
-          
-          // Discretize lighting using steps
-          vec3 lightDirection = normalize(vec3(1.0, 1.0, 1.0));
-          float intensity = dot(normal, lightDirection);
-          
-          // Control number of steps with effectStrength (3-8 steps)
-          float steps = 3.0 + 5.0 * effectStrength;
-          intensity = floor(intensity * steps) / steps;
-          
-          // Edge detection for outline
-          float edgeThreshold = 0.4;
-          float edge = smoothstep(edgeThreshold - 0.05, edgeThreshold + 0.05, dot(normalize(-vViewPosition), normal));
-          
-          // Ambient light
-          float ambientStrength = 0.3;
-          vec3 ambient = ambientStrength * diffuse;
-          
-          // Diffuse light
-          vec3 diffuseLight = intensity * diffuse;
-          
-          // Final color
-          vec3 finalColor = edge * (ambient + diffuseLight);
-          gl_FragColor = vec4(finalColor, opacity);
-        }
-      `,
-      
-      // Glow shader main function
-      glowMain: `
-        void main() {
-          vec3 normal = normalize(vNormal);
-          vec3 viewDir = normalize(-vViewPosition);
-          
-          // Base lighting
-          vec3 baseColor = calculateLighting(normal, vViewPosition, diffuse);
-          
-          // Add glow effect (Fresnel-based edge glow)
-          float fresnel = pow(1.0 - max(dot(viewDir, normal), 0.0), 3.0) * effectStrength;
-          vec3 glowColor = vec3(0.3, 0.6, 1.0); // Blue glow
-          
-          // Pulsating glow controlled by time
-          float pulse = 0.7 + 0.3 * sin(time * 2.0);
-          
-          // Apply glow
-          vec3 finalColor = baseColor + glowColor * fresnel * pulse;
-          gl_FragColor = vec4(finalColor, opacity);
-        }
-      `,
-      
-      // Outline shader main function
-      outlineMain: `
-        void main() {
-          vec3 normal = normalize(vNormal);
-          vec3 viewDir = normalize(-vViewPosition);
-          
-          // Base lighting
-          vec3 baseColor = calculateLighting(normal, vViewPosition, diffuse);
-          
-          // Create outline based on view angle
-          float edgeFactor = abs(dot(viewDir, normal));
-          float outlineThickness = 0.3 * effectStrength;
-          float outline = smoothstep(outlineThickness, outlineThickness + 0.1, edgeFactor);
-          
-          // Apply outline
-          vec3 outlineColor = vec3(0.0, 0.0, 0.0); // Black outline
-          vec3 finalColor = mix(outlineColor, baseColor, outline);
-          
-          gl_FragColor = vec4(finalColor, opacity);
-        }
-      `
-    };
-  }
-  
-  /**
-   * Create a complete shader based on current type
-   * @private
-   * @returns {Object} Shader object with vertex and fragment shader code
-   */
-  _createShader() {
-    // Vertex shader
-    const vertexShader = `
-      ${this.vertexShaderParts.common}
-      
-      ${this.vertexShaderParts.main}
-    `;
-    
-    // Select fragment shader main function based on type
-    let fragmentMain;
-    switch (this.type) {
-      case 'toon':
-        fragmentMain = this.fragmentShaderParts.toonMain;
-        break;
-      case 'glow':
-        fragmentMain = this.fragmentShaderParts.glowMain;
-        break;
-      case 'outline':
-        fragmentMain = this.fragmentShaderParts.outlineMain;
-        break;
-      default:
-        fragmentMain = this.fragmentShaderParts.standardMain;
-    }
-    
-    // Fragment shader
-    const fragmentShader = `
-      uniform vec3 diffuse;
-      uniform float opacity;
-      
-      ${this.fragmentShaderParts.common}
-      
-      ${this.fragmentShaderParts.lighting}
-      
-      ${fragmentMain}
-    `;
-    
-    return {
-      vertexShader,
-      fragmentShader
-    };
   }
   
   /**
@@ -303,11 +145,9 @@ export class ProteinShader {
     // Handle context loss
     if (this.contextLost || !this.initialized) {
       console.warn('Cannot create shader material: WebGL context lost or shader not initialized');
-      // Fall back to a standard material that doesn't require custom shaders
-      return new THREE.MeshStandardMaterial({
+      // Fall back to a basic material that doesn't require custom shaders
+      return new THREE.MeshLambertMaterial({
         color: options.color || 0xffffff,
-        roughness: options.roughness !== undefined ? options.roughness : 0.5,
-        metalness: options.metalness !== undefined ? options.metalness : 0.5,
         transparent: options.transparent !== undefined ? options.transparent : false,
         opacity: options.opacity !== undefined ? options.opacity : 1.0,
         side: options.side || THREE.FrontSide
@@ -315,53 +155,97 @@ export class ProteinShader {
     }
     
     try {
-      // For toon shader, use built-in Three.js MeshToonMaterial
-      if (this.type === 'toon') {
-        const material = new THREE.MeshToonMaterial({
-          color: options.color || 0xffffff,
-          transparent: options.transparent || false,
-          opacity: options.opacity !== undefined ? options.opacity : 1.0,
-          side: options.side || THREE.FrontSide
-        });
-        
-        // Store userData for effect strength updates
-        material.userData.effectStrength = 1.0;
-        
-        return material;
+      // Create a cache key from the options
+      const colorHex = options.color ? options.color.getHexString() : 'ffffff';
+      const transparent = options.transparent ? 'T' : 'O';
+      const opacity = options.opacity !== undefined ? options.opacity.toFixed(2) : '1.00';
+      const side = options.side === THREE.DoubleSide ? 'D' : 'S';
+      
+      const cacheKey = `${this.type}_${colorHex}_${transparent}_${opacity}_${side}`;
+      
+      // Check if we have a cached material
+      if (this.materialCache.has(cacheKey)) {
+        return this.materialCache.get(cacheKey);
       }
       
-      // For other shaders, we'll use a simpler approach to avoid context issues
-      // Use standard material for most shaders
-      const material = new THREE.MeshStandardMaterial({
-        color: options.color || 0xffffff,
-        roughness: options.roughness !== undefined ? options.roughness : 0.5,
-        metalness: options.metalness !== undefined ? options.metalness : 0.5,
-        transparent: options.transparent !== undefined ? options.transparent : false,
-        opacity: options.opacity !== undefined ? options.opacity : 1.0,
-        side: options.side || THREE.FrontSide
-      });
+      // For simplicity and performance reasons, we'll use built-in Three.js materials
+      // rather than creating custom shader materials, which can cause context loss
       
-      // Apply type-specific adjustments
-      if (this.type === 'glow') {
-        material.emissive = options.color || new THREE.Color(0xffffff);
-        material.emissiveIntensity = 0.3;
-      } else if (this.type === 'outline') {
-        material.userData.isOutline = true;
+      let material;
+      
+      switch (this.type) {
+        case 'toon':
+          material = new THREE.MeshToonMaterial({
+            color: options.color || new THREE.Color(0xffffff),
+            transparent: options.transparent || false,
+            opacity: options.opacity !== undefined ? options.opacity : 1.0,
+            side: options.side || THREE.FrontSide,
+            flatShading: true
+          });
+          
+          // Store effect strength in userData for later updates
+          material.userData.effectStrength = 1.0;
+          break;
+        
+        case 'glow':
+          // For glow shader, use standard material with emissive
+          material = new THREE.MeshStandardMaterial({
+            color: options.color || new THREE.Color(0xffffff),
+            emissive: options.color || new THREE.Color(0xffffff),
+            emissiveIntensity: 0.2, // Low intensity to avoid overwhelming the scene
+            roughness: 0.7, // Higher roughness for better performance
+            metalness: 0.2, // Lower metalness for better performance
+            transparent: options.transparent || false,
+            opacity: options.opacity !== undefined ? options.opacity : 1.0,
+            side: options.side || THREE.FrontSide,
+            flatShading: true
+          });
+          
+          // Store effect strength in userData
+          material.userData.effectStrength = 1.0;
+          break;
+        
+        case 'outline':
+          // For outline effect, use phong material which is more performant
+          material = new THREE.MeshPhongMaterial({
+            color: options.color || new THREE.Color(0xffffff),
+            transparent: options.transparent || false,
+            opacity: options.opacity !== undefined ? options.opacity : 1.0,
+            side: options.side || THREE.FrontSide,
+            flatShading: true
+          });
+          
+          // Store effect strength in userData
+          material.userData.effectStrength = 1.0;
+          material.userData.isOutline = true;
+          break;
+        
+        case 'standard':
+        default:
+          // Use Lambert material for better performance
+          material = new THREE.MeshLambertMaterial({
+            color: options.color || new THREE.Color(0xffffff),
+            transparent: options.transparent || false,
+            opacity: options.opacity !== undefined ? options.opacity : 1.0,
+            side: options.side || THREE.FrontSide,
+            flatShading: true
+          });
+          
+          // Store effect strength in userData
+          material.userData.effectStrength = 1.0;
       }
       
-      // Store effect strength in userData
-      material.userData.effectStrength = 1.0;
+      // Cache the material for reuse
+      this.materialCache.set(cacheKey, material);
       
       return material;
     } catch (error) {
       console.error('Error creating shader material:', error);
       
-      // Fall back to standard material on error
-      return new THREE.MeshStandardMaterial({
+      // Fall back to lambert material on error
+      return new THREE.MeshLambertMaterial({
         color: options.color || 0xffffff,
-        roughness: options.roughness !== undefined ? options.roughness : 0.5,
-        metalness: options.metalness !== undefined ? options.metalness : 0.5,
-        transparent: options.transparent !== undefined ? options.transparent : false,
+        transparent: options.transparent || false,
         opacity: options.opacity !== undefined ? options.opacity : 1.0,
         side: options.side || THREE.FrontSide
       });
@@ -377,22 +261,39 @@ export class ProteinShader {
     if (!material) return;
     
     try {
-      // Clamp strength to valid range
-      const clampedStrength = Math.max(0.0, Math.min(1.0, strength));
+      // Clamp strength to valid range and apply maximum limit
+      const clampedStrength = Math.min(
+        this.maxEffectStrength, 
+        Math.max(0.0, Math.min(1.0, strength))
+      );
       
-      // Update based on material type
-      if (material.isMeshToonMaterial) {
-        // Store effect strength in userData
-        material.userData.effectStrength = clampedStrength;
-      } else if (material.isMeshStandardMaterial) {
-        // Store effect strength in userData
-        material.userData.effectStrength = clampedStrength;
-        
-        // Apply type-specific adjustments
-        if (this.type === 'glow' && material.emissiveIntensity !== undefined) {
-          material.emissiveIntensity = 0.1 + clampedStrength * 0.5;
-          material.needsUpdate = true;
-        }
+      // Store effect strength in userData
+      material.userData.effectStrength = clampedStrength;
+      
+      // Update based on material and shader type
+      switch (this.type) {
+        case 'toon':
+          if (material.isMeshToonMaterial) {
+            // Nothing to update for toon material - Three.js handles it internally
+          }
+          break;
+          
+        case 'glow':
+          if (material.isMeshStandardMaterial && material.emissiveIntensity !== undefined) {
+            // Scale from 0.1 to 0.5 to avoid too strong effects
+            material.emissiveIntensity = 0.1 + clampedStrength * 0.4;
+            material.needsUpdate = true;
+          }
+          break;
+          
+        case 'outline':
+          // For outline, we don't actually do anything here, just store the value
+          break;
+          
+        case 'standard':
+        default:
+          // Standard doesn't have special effect parameters
+          break;
       }
     } catch (error) {
       console.warn('Error updating effect strength:', error);
@@ -431,9 +332,48 @@ export class ProteinShader {
    * @param {string} type - New shader type
    */
   setType(type) {
+    // Don't reinitialize if type hasn't changed
     if (this.type === type) return;
     
-    this.type = type;
+    // Check if we need to downgrade for low-end devices
+    if (this.isLowEndDevice && type !== 'standard') {
+      console.log(`Requested shader type '${type}' downgraded to 'standard' for performance`);
+      this.type = 'standard';
+    } else {
+      this.type = type;
+    }
+    
+    // Clear material cache when changing types
+    this.materialCache.clear();
+    
+    // Reinitialize the shader
     this._initShader();
+  }
+  
+  /**
+   * Dispose of shader resources
+   */
+  dispose() {
+    // Dispose of all cached materials
+    for (const material of this.materialCache.values()) {
+      if (material && material.dispose) {
+        material.dispose();
+      }
+    }
+    
+    // Clear cache
+    this.materialCache.clear();
+    
+    // Remove context handlers
+    if (this.renderer && this.renderer.domElement) {
+      this.renderer.domElement.removeEventListener('webglcontextlost', this._handleContextLost);
+      this.renderer.domElement.removeEventListener('webglcontextrestored', this._handleContextRestored);
+    }
+    
+    // Clear references
+    this.renderer = null;
+    this.uniforms = null;
+    this.onContextLostCallback = null;
+    this.onContextRestoredCallback = null;
   }
 }
