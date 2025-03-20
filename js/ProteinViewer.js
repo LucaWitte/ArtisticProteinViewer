@@ -28,12 +28,15 @@ export class ProteinViewer {
       throw new Error('Container element not found');
     }
     
-    // Set configuration
+    // Set configuration with more conservative defaults
     this.config = {
       backgroundColor: options.backgroundColor || '#1a1a2e',
       defaultUrl: options.defaultUrl || null,
       initialStyle: options.initialStyle || 'ball-stick',
-      initialShader: options.initialShader || 'standard'
+      initialShader: options.initialShader || 'standard',
+      maxAtoms: options.maxAtoms || 5000, // Limit total atoms for performance
+      progressiveLoading: true, // Always use progressive loading
+      safeMode: true, // Use safer rendering settings
     };
     
     // Initialize state
@@ -45,7 +48,10 @@ export class ProteinViewer {
       currentShader: this.config.initialShader,
       effectStrength: 0.5,
       retryCount: 0,
-      maxRetries: 3
+      maxRetries: 3,
+      hasContextLoss: false,
+      pendingLoad: null,
+      lastProteinUrl: null,
     };
     
     // Storage for rendering objects
@@ -55,8 +61,15 @@ export class ProteinViewer {
     this.controls = null;
     this.protein = null;
     
+    // Error display element
+    this.errorDisplay = null;
+    
     // Recovery timer
     this.recoveryTimer = null;
+    this.frameLimiter = null;
+    
+    // Visualization objects
+    this.activeVisualization = null;
     
     // Bind methods to ensure correct this context
     this._handleResize = this._handleResize.bind(this);
@@ -66,18 +79,20 @@ export class ProteinViewer {
     this._animate = this._animate.bind(this);
     
     // Monitor visible status
-    this._setupVisibilityTracking();
+    this.setupVisibilityTracking();
     
     // Initialize the viewer
     this._init();
   }
   
   /**
-   * Initialize the viewer
+   * Initialize the viewer with error handling and safe fallbacks
    * @private
    */
   async _init() {
     try {
+      console.log("Initializing ProteinViewer...");
+      
       // Check WebGL support
       if (!WebGLDetector.isWebGLAvailable()) {
         this._showError('WebGL is not supported by your browser');
@@ -100,37 +115,47 @@ export class ProteinViewer {
       // Wait a frame before initializing to ensure DOM is ready
       await new Promise(resolve => requestAnimationFrame(resolve));
       
-      // Initialize viewer components
+      // Initialize viewer components with conservative settings
       await this._initRenderer();
       
       // Wait another frame to ensure renderer is ready
       await new Promise(resolve => requestAnimationFrame(resolve));
       
-      this._initScene();
-      this._initCamera();
-      this._initControls();
-      this._initLights();
-      
-      // Wait another frame before loading shader
-      await new Promise(resolve => requestAnimationFrame(resolve));
-      
-      this._initShaders();
-      this._initEventListeners();
-      
-      // Start animation loop
-      this._startAnimationLoop();
-      
-      // Set initialized flag
-      this.state.isInitialized = true;
-      
-      // Emit initialized event
-      this._emitEvent('initialized');
-      
-      // Load default model if specified (after a short delay)
-      if (this.config.defaultUrl) {
-        setTimeout(() => {
-          this.loadProtein(this.config.defaultUrl);
-        }, 300);
+      // Initialize other components only if renderer was created successfully
+      if (this.renderer) {
+        this._initScene();
+        this._initCamera();
+        this._initControls();
+        this._initLights();
+        
+        // Wait another frame before loading shader
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        
+        // Initialize shader with default type
+        this._initShaders();
+        
+        // Set up event listeners
+        this._initEventListeners();
+        
+        // Start animation loop
+        this._startAnimationLoop();
+        
+        // Set initialized flag
+        this.state.isInitialized = true;
+        
+        // Emit initialized event
+        this._emitEvent('initialized');
+        
+        console.log("ProteinViewer initialized successfully");
+        
+        // Load default model if specified (with a delay to ensure full initialization)
+        if (this.config.defaultUrl) {
+          setTimeout(() => {
+            this.loadProtein(this.config.defaultUrl);
+          }, 500);
+        }
+      } else {
+        this._showError('Failed to initialize WebGL renderer');
       }
     } catch (error) {
       console.error('Error initializing protein viewer:', error);
@@ -139,17 +164,19 @@ export class ProteinViewer {
   }
   
   /**
-   * Initialize the WebGL renderer
+   * Initialize the WebGL renderer with robust error handling
    * @private
    */
   async _initRenderer() {
     try {
-      // Use RendererFactory for robust renderer creation
+      console.log("Initializing WebGL renderer...");
+      
+      // Use RendererFactory for robust renderer creation with more conservative settings
       this.renderer = RendererFactory.createRenderer({
         container: this.canvas,
-        antialias: true,
+        antialias: false, // Disable antialiasing for better performance
         alpha: true,
-        pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+        pixelRatio: Math.min(window.devicePixelRatio || 1, 1.5), // Lower pixel ratio
         onContextLost: this._handleContextLost,
         onContextRestored: this._handleContextRestored
       });
@@ -162,14 +189,19 @@ export class ProteinViewer {
       
       // Force an initial render to validate the context
       this.rendererActive = true;
+      
+      console.log("WebGL renderer initialized successfully");
+      return true;
     } catch (error) {
       console.error('Error initializing renderer:', error);
-      throw new Error('Failed to initialize WebGL renderer');
+      this._showError('Failed to initialize WebGL renderer. Your device may not support WebGL or have limited graphics capabilities.');
+      this.rendererActive = false;
+      return false;
     }
   }
   
   /**
-   * Initialize the scene
+   * Initialize the scene with simple settings
    * @private
    */
   _initScene() {
@@ -204,39 +236,42 @@ export class ProteinViewer {
    * @private
    */
   _initControls() {
-    // Create orbit controls
+    // Create orbit controls with conservative settings
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.1;
-    this.controls.rotateSpeed = 0.8;
-    this.controls.zoomSpeed = 1.2;
-    this.controls.panSpeed = 0.8;
+    this.controls.rotateSpeed = 0.7; // Lower speed for more stability
+    this.controls.zoomSpeed = 1.0;
+    this.controls.panSpeed = 0.7;
     this.controls.minDistance = 5;
     this.controls.maxDistance = 500;
+    
+    // Disable right mouse button panning to avoid accidental navigation
+    this.controls.enablePan = false;
   }
   
   /**
-   * Initialize lights
+   * Initialize lights with conservative settings
    * @private
    */
   _initLights() {
     // Ambient light
-    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.6); // Brighter ambient for less reliance on directional
     this.scene.add(this.ambientLight);
     
     // Directional light
-    this.mainLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    this.mainLight = new THREE.DirectionalLight(0xffffff, 0.5); // Less intense directional
     this.mainLight.position.set(1, 1, 1);
     this.scene.add(this.mainLight);
     
     // Fill light
-    this.fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    this.fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
     this.fillLight.position.set(-1, -0.5, -1);
     this.scene.add(this.fillLight);
     
-    // Rim light
-    this.rimLight = new THREE.HemisphereLight(0xffffff, 0x303030, 0.3);
-    this.scene.add(this.rimLight);
+    // Disable all shadows for better performance
+    this.mainLight.castShadow = false;
+    this.fillLight.castShadow = false;
   }
   
   /**
@@ -277,9 +312,8 @@ export class ProteinViewer {
   
   /**
    * Setup visibility tracking
-   * @private
    */
-  _setupVisibilityTracking() {
+  setupVisibilityTracking() {
     this.isVisible = !document.hidden;
     
     // Use Intersection Observer when available
@@ -296,7 +330,7 @@ export class ProteinViewer {
   }
   
   /**
-   * Start animation loop
+   * Start animation loop with frame limiting for stability
    * @private
    */
   _startAnimationLoop() {
@@ -306,8 +340,34 @@ export class ProteinViewer {
       this.animationFrameId = null;
     }
     
-    // Start a new animation loop
-    this.animationFrameId = requestAnimationFrame(this._animate);
+    // Use a frame rate limiter for better stability
+    let lastFrameTime = 0;
+    const minFrameInterval = 1000 / 30; // Limit to 30 FPS for stability
+    
+    // Start a new animation loop with frame limiting
+    const animateWithLimiter = (time) => {
+      this.animationFrameId = requestAnimationFrame(animateWithLimiter);
+      
+      // Skip if not visible or not initialized or renderer inactive
+      if (!this.isVisible || !this.state.isInitialized || !this.rendererActive) {
+        return;
+      }
+      
+      // Apply frame limiting
+      const delta = time - lastFrameTime;
+      if (delta < minFrameInterval) {
+        return; // Skip this frame
+      }
+      
+      // Update last frame time
+      lastFrameTime = time;
+      
+      // Actual animation frame
+      this._animate(time);
+    };
+    
+    // Start the animation loop
+    this.animationFrameId = requestAnimationFrame(animateWithLimiter);
   }
   
   /**
@@ -316,10 +376,7 @@ export class ProteinViewer {
    * @param {number} time - Current timestamp
    */
   _animate(time) {
-    // Set up next frame
-    this.animationFrameId = requestAnimationFrame(this._animate);
-    
-    // Skip if not visible or not initialized or renderer inactive
+    // Skip if necessary conditions aren't met
     if (!this.isVisible || !this.state.isInitialized || !this.rendererActive) {
       return;
     }
@@ -357,8 +414,19 @@ export class ProteinViewer {
    * @returns {Promise<boolean>} Promise resolving to success status
    */
   async loadProtein(url) {
+    // Store this request in case we need to retry after context restoration
+    this.state.pendingLoad = url;
+    this.state.lastProteinUrl = url;
+    
     if (this.state.isLoading) {
       console.warn('Already loading a protein, please wait');
+      return false;
+    }
+    
+    // Check if renderer is active
+    if (!this.rendererActive) {
+      console.warn('Cannot load protein: renderer is inactive');
+      this._showError('Cannot load protein: WebGL renderer is inactive. Please refresh the page.');
       return false;
     }
     
@@ -377,6 +445,11 @@ export class ProteinViewer {
       const pdbData = await loader.load(url, (progress) => {
         this._emitEvent('loadProgress', { progress: progress * 100 });
       });
+      
+      // Apply atom limit for safety
+      if (pdbData.atoms && pdbData.atoms.length > this.config.maxAtoms) {
+        console.warn(`Protein has ${pdbData.atoms.length} atoms, exceeding the limit of ${this.config.maxAtoms}. Some atoms will not be displayed.`);
+      }
       
       // Create protein visualization
       await this._createProteinModel(pdbData);
@@ -401,8 +474,18 @@ export class ProteinViewer {
    * @returns {Promise<boolean>} Promise resolving to success status
    */
   async loadProteinFromFile(file) {
+    // Clear any pending URL load
+    this.state.pendingLoad = null;
+    
     if (this.state.isLoading) {
       console.warn('Already loading a protein, please wait');
+      return false;
+    }
+    
+    // Check if renderer is active
+    if (!this.rendererActive) {
+      console.warn('Cannot load protein: renderer is inactive');
+      this._showError('Cannot load protein: WebGL renderer is inactive. Please refresh the page.');
       return false;
     }
     
@@ -421,6 +504,11 @@ export class ProteinViewer {
       const pdbData = await loader.loadFromFile(file, (progress) => {
         this._emitEvent('loadProgress', { progress: progress * 100 });
       });
+      
+      // Apply atom limit for safety
+      if (pdbData.atoms && pdbData.atoms.length > this.config.maxAtoms) {
+        console.warn(`Protein has ${pdbData.atoms.length} atoms, exceeding the limit of ${this.config.maxAtoms}. Some atoms will not be displayed.`);
+      }
       
       // Create protein visualization
       await this._createProteinModel(pdbData);
@@ -482,10 +570,9 @@ export class ProteinViewer {
     // Clear existing visualization
     this._clearVisualization();
     
-    // Create a simple ball and stick visualization
-    // Using a simple approach to avoid context loss
+    // Create a visualization based on current style
     try {
-      this._createBallAndStickVisualization();
+      await this._updateVisualization();
     } catch (error) {
       console.error('Error creating visualization:', error);
       // Create a minimal fallback visualization
@@ -494,45 +581,68 @@ export class ProteinViewer {
   }
   
   /**
-   * Create ball and stick visualization
+   * Update the visualization based on active style
    * @private
+   * @returns {Promise<void>}
    */
-  _createBallAndStickVisualization() {
-    // Import visualization dynamically only when needed
-    import('./visualization/BallAndStick.js')
-      .then(module => {
-        const BallAndStick = module.BallAndStick;
-        
-        // Create the visualization
-        const visualization = new BallAndStick({
-          proteinModel: {
-            atoms: this.protein.atoms,
-            bonds: this.protein.bonds,
-            residues: this.protein.residues,
-            chains: this.protein.chains,
-            centerOfMass: this.protein.centerOfMass,
-            boundingBox: this.protein.boundingBox,
-            getAtomColor: this._getAtomColor.bind(this)
-          },
-          colorScheme: 'element',
-          shader: this.shader
-        });
-        
-        // Create and add to scene
-        visualization.create()
-          .then(() => {
-            this.proteinGroup.add(visualization.object);
-            this.activeVisualization = visualization;
-          })
-          .catch(error => {
-            console.error('Error creating ball and stick visualization:', error);
-            this._createFallbackVisualization();
-          });
-      })
-      .catch(error => {
-        console.error('Error importing visualization module:', error);
-        this._createFallbackVisualization();
+  async _updateVisualization() {
+    if (!this.protein) return;
+    
+    try {
+      // Remove previous visualization if exists
+      this._clearVisualization();
+      
+      // Import visualization dynamically only when needed
+      let VisualizationClass;
+      
+      switch (this.state.currentStyle) {
+        case 'ball-stick':
+          const BallStickModule = await import('./visualization/BallAndStick.js');
+          VisualizationClass = BallStickModule.BallAndStick;
+          break;
+          
+        case 'ribbon':
+          const RibbonModule = await import('./visualization/Ribbon.js');
+          VisualizationClass = RibbonModule.Ribbon;
+          break;
+          
+        case 'surface':
+          const SurfaceModule = await import('./visualization/Surface.js');
+          VisualizationClass = SurfaceModule.Surface;
+          break;
+          
+        default:
+          console.warn(`Unknown visualization style: ${this.state.currentStyle}, falling back to ball-stick`);
+          const FallbackModule = await import('./visualization/BallAndStick.js');
+          VisualizationClass = FallbackModule.BallAndStick;
+      }
+      
+      // Create the visualization
+      const visualization = new VisualizationClass({
+        proteinModel: {
+          atoms: this.protein.atoms,
+          bonds: this.protein.bonds,
+          residues: this.protein.residues,
+          chains: this.protein.chains,
+          centerOfMass: this.protein.centerOfMass,
+          boundingBox: this.protein.boundingBox,
+          getAtomColor: this._getAtomColor.bind(this)
+        },
+        colorScheme: 'element',
+        shader: this.shader
       });
+      
+      // Create and add to scene
+      await visualization.create();
+      this.proteinGroup.add(visualization.object);
+      this.activeVisualization = visualization;
+      
+      // Apply current effect strength
+      visualization.updateEffectStrength(this.state.effectStrength);
+    } catch (error) {
+      console.error('Error updating visualization:', error);
+      this._createFallbackVisualization();
+    }
   }
   
   /**
@@ -552,7 +662,7 @@ export class ProteinViewer {
       const colors = [];
       
       // Determine stride for large proteins (show a subset)
-      const MAX_DISPLAY_ATOMS = 2000;
+      const MAX_DISPLAY_ATOMS = 1000;
       const stride = Math.max(1, Math.ceil(atoms.length / MAX_DISPLAY_ATOMS));
       
       // Process atoms
@@ -590,6 +700,17 @@ export class ProteinViewer {
       this.fallbackVisualization = points;
     } catch (error) {
       console.error('Error creating fallback visualization:', error);
+      
+      // Create absolute minimum visualization - just a cube
+      try {
+        const geometry = new THREE.BoxGeometry(10, 10, 10);
+        const material = new THREE.MeshBasicMaterial({ color: 0x3498db, wireframe: true });
+        const cube = new THREE.Mesh(geometry, material);
+        this.proteinGroup.add(cube);
+        this.fallbackVisualization = cube;
+      } catch (e) {
+        console.error('Failed to create even minimal fallback visualization:', e);
+      }
     }
   }
   
@@ -721,24 +842,14 @@ export class ProteinViewer {
         }
       }
     }
-  }
-  
-  /**
-   * Update protein visualization
-   * @private
-   */
-  _updateProteinVisualization() {
-    if (!this.protein) return;
     
-    try {
-      // Clear existing visualization
-      this._clearVisualization();
-      
-      // Recreate visualization
-      this._createVisualization();
-    } catch (error) {
-      console.error('Error updating visualization:', error);
-      this._createFallbackVisualization();
+    // Force garbage collection
+    if (window.gc) {
+      try {
+        window.gc();
+      } catch (e) {
+        // Ignore - not all browsers support this
+      }
     }
   }
   
@@ -793,6 +904,9 @@ export class ProteinViewer {
       if (!this.animationFrameId) {
         this._startAnimationLoop();
       }
+    } else {
+      // Optionally pause when not visible to save resources
+      // this._stopAnimationLoop();
     }
   }
   
@@ -805,6 +919,7 @@ export class ProteinViewer {
     
     // Mark renderer as unavailable
     this.rendererActive = false;
+    this.state.hasContextLoss = true;
     
     // Stop any previous recovery attempt
     if (this.recoveryTimer) {
@@ -820,6 +935,9 @@ export class ProteinViewer {
       // Try to recover after a short delay
       this._attemptContextRecovery();
     }, 1000);
+    
+    // Show error message
+    this._showError('WebGL rendering context was lost. Attempting to recover...');
   }
   
   /**
@@ -861,6 +979,7 @@ export class ProteinViewer {
     
     // Reset retry count
     this.state.retryCount = 0;
+    this.state.hasContextLoss = false;
     
     // Mark renderer as available again
     this.rendererActive = true;
@@ -875,15 +994,30 @@ export class ProteinViewer {
       // Ensure renderer is properly sized
       this._updateRendererSize();
       
-      // Recreate visualization if needed
-      if (this.protein) {
-        this._updateProteinVisualization();
+      // Re-initialize shaders
+      this._initShaders();
+      
+      // If we have a pending load, retry it
+      if (this.state.pendingLoad) {
+        const urlToLoad = this.state.pendingLoad;
+        this.state.pendingLoad = null; // Clear pending load
+        
+        setTimeout(() => {
+          this.loadProtein(urlToLoad);
+        }, 500);
+      }
+      // Otherwise recreate existing visualization if needed
+      else if (this.protein) {
+        this._updateVisualization();
       }
       
       // Ensure animation loop is running
       if (!this.animationFrameId) {
         this._startAnimationLoop();
       }
+      
+      // Hide error message
+      this._hideError();
       
       // Emit event
       this._emitEvent('contextRestored');
@@ -927,8 +1061,24 @@ export class ProteinViewer {
     }
     
     // Set error message
-    this.errorDisplay.innerHTML = `<div><strong>Error:</strong><br>${message}</div>`;
+    this.errorDisplay.innerHTML = `
+      <div>
+        <strong>Error:</strong><br>${message}
+        ${this.state.lastProteinUrl ? 
+          `<br><br><button id="retry-protein-load" style="padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">Try Again</button>` : 
+          ''}
+      </div>
+    `;
     this.errorDisplay.style.display = 'flex';
+    
+    // Add retry button click handler
+    const retryButton = document.getElementById('retry-protein-load');
+    if (retryButton && this.state.lastProteinUrl) {
+      retryButton.addEventListener('click', () => {
+        this._hideError();
+        this.loadProtein(this.state.lastProteinUrl);
+      });
+    }
     
     // Emit error event
     this._emitEvent('error', { message });
@@ -939,259 +1089,4 @@ export class ProteinViewer {
    * @private
    */
   _hideError() {
-    if (this.errorDisplay) {
-      this.errorDisplay.style.display = 'none';
-    }
-  }
-  
-  /**
-   * Emit an event
-   * @private
-   * @param {string} name - Event name
-   * @param {Object} detail - Event details
-   */
-  _emitEvent(name, detail = {}) {
-    const event = new CustomEvent(`proteinviewer:${name}`, {
-      bubbles: true,
-      detail: detail
-    });
-    
-    this.container.dispatchEvent(event);
-  }
-  
-  /* Public API */
-  
-  /**
-   * Set visualization style
-   * @param {string} style - Style name ('ball-stick', 'ribbon', 'surface')
-   */
-  setStyle(style) {
-    if (this.state.currentStyle === style) return;
-    
-    this.state.currentStyle = style;
-    
-    // Update visualization if protein is loaded
-    if (this.protein) {
-      this._updateProteinVisualization();
-    }
-    
-    this._emitEvent('styleChanged', { style });
-  }
-  
-  /**
-   * Set shader effect
-   * @param {string} effect - Effect name ('standard', 'toon', 'glow', 'outline')
-   */
-  setShader(effect) {
-    if (this.state.currentShader === effect) return;
-    
-    this.state.currentShader = effect;
-    
-    // Update shader
-    if (this.shader) {
-      this.shader.setType(effect);
-    }
-    
-    // Update visualization if protein is loaded
-    if (this.protein) {
-      this._updateProteinVisualization();
-    }
-    
-    this._emitEvent('shaderChanged', { effect });
-  }
-  
-  /**
-   * Set effect strength
-   * @param {number} strength - Effect strength (0.0 - 1.0)
-   */
-  setEffectStrength(strength) {
-    const value = Math.max(0, Math.min(1, strength));
-    this.state.effectStrength = value;
-    
-    if (this.activeVisualization && this.activeVisualization.updateEffectStrength) {
-      this.activeVisualization.updateEffectStrength(value);
-    }
-    
-    this._emitEvent('effectStrengthChanged', { strength: value });
-  }
-  
-  /**
-   * Set background color
-   * @param {string} color - Color in hex format
-   */
-  setBackgroundColor(color) {
-    this.config.backgroundColor = color;
-    
-    if (this.scene) {
-      this.scene.background = new THREE.Color(color);
-    }
-    
-    if (this.renderer) {
-      this.renderer.setClearColor(new THREE.Color(color), 1.0);
-    }
-    
-    this._emitEvent('backgroundColorChanged', { color });
-  }
-  
-  /**
-   * Take a screenshot
-   * @param {Object} options - Screenshot options
-   * @param {number} [options.width] - Width of screenshot
-   * @param {number} [options.height] - Height of screenshot
-   * @param {number} [options.scale=2] - Scale factor
-   * @returns {string|null} Data URL of screenshot or null if failed
-   */
-  takeScreenshot(options = {}) {
-    if (!this.renderer || !this.scene || !this.camera || this.rendererActive === false) {
-      console.warn('Cannot take screenshot - renderer not ready');
-      return null;
-    }
-    
-    try {
-      // Save current size
-      const currentSize = {
-        width: this.renderer.domElement.width,
-        height: this.renderer.domElement.height
-      };
-      
-      // Calculate output size
-      let width, height;
-      
-      if (options.width && options.height) {
-        width = options.width;
-        height = options.height;
-      } else if (options.scale) {
-        width = currentSize.width * options.scale;
-        height = currentSize.height * options.scale;
-      } else {
-        width = currentSize.width * 2;
-        height = currentSize.height * 2;
-      }
-      
-      // Limit size to reasonable values to avoid context loss
-      const MAX_DIMENSION = 4096;
-      if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
-        const scale = Math.min(MAX_DIMENSION / width, MAX_DIMENSION / height);
-        width = Math.floor(width * scale);
-        height = Math.floor(height * scale);
-      }
-      
-      // Resize renderer
-      this.renderer.setSize(width, height, false);
-      
-      // Update camera aspect
-      const originalAspect = this.camera.aspect;
-      this.camera.aspect = width / height;
-      this.camera.updateProjectionMatrix();
-      
-      // Render scene
-      this.renderer.render(this.scene, this.camera);
-      
-      // Get screenshot
-      const dataURL = this.renderer.domElement.toDataURL('image/png');
-      
-      // Restore original size
-      this.renderer.setSize(currentSize.width, currentSize.height, false);
-      
-      // Restore camera aspect
-      this.camera.aspect = originalAspect;
-      this.camera.updateProjectionMatrix();
-      
-      // Render again at original size
-      this.renderer.render(this.scene, this.camera);
-      
-      return dataURL;
-    } catch (error) {
-      console.error('Error taking screenshot:', error);
-      return null;
-    }
-  }
-  
-  /**
-   * Add an event listener
-   * @param {string} event - Event name
-   * @param {Function} callback - Event callback
-   */
-  on(event, callback) {
-    if (typeof callback !== 'function') return;
-    
-    this.container.addEventListener(`proteinviewer:${event}`, callback);
-  }
-  
-  /**
-   * Remove an event listener
-   * @param {string} event - Event name
-   * @param {Function} callback - Event callback
-   */
-  off(event, callback) {
-    this.container.removeEventListener(`proteinviewer:${event}`, callback);
-  }
-  
-  /**
-   * Dispose of viewer resources
-   */
-  dispose() {
-    // Stop animation and recovery attempts
-    this._stopAnimationLoop();
-    
-    if (this.recoveryTimer) {
-      clearTimeout(this.recoveryTimer);
-      this.recoveryTimer = null;
-    }
-    
-    if (this.resizeTimer) {
-      clearTimeout(this.resizeTimer);
-      this.resizeTimer = null;
-    }
-    
-    this.isVisible = false;
-    
-    // Remove event listeners
-    window.removeEventListener('resize', this._handleResize);
-    document.removeEventListener('visibilitychange', this._handleVisibilityChange);
-    
-    // Stop intersection observer
-    if (this.visibilityObserver) {
-      this.visibilityObserver.disconnect();
-      this.visibilityObserver = null;
-    }
-    
-    // Clear protein
-    this._clearProtein();
-    
-    // Dispose of controls
-    if (this.controls) {
-      this.controls.dispose();
-      this.controls = null;
-    }
-    
-    // Dispose of renderer
-    if (this.renderer) {
-      try {
-        this.renderer.dispose();
-      } catch (error) {
-        console.warn('Error disposing renderer:', error);
-      }
-      this.renderer = null;
-    }
-    
-    // Remove canvas if we created it
-    if (this.canvas && this.canvas !== this.container && this.canvas.parentNode === this.container) {
-      this.container.removeChild(this.canvas);
-      this.canvas = null;
-    }
-    
-    // Remove error display
-    if (this.errorDisplay && this.errorDisplay.parentNode === this.container) {
-      this.container.removeChild(this.errorDisplay);
-      this.errorDisplay = null;
-    }
-    
-    // Reset state
-    this.state.isInitialized = false;
-    this.state.isReady = false;
-    
-    // Emit disposed event
-    this._emitEvent('disposed');
-  }
-}
+    if (th
