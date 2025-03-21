@@ -25,10 +25,6 @@ document.addEventListener('DOMContentLoaded', function() {
       // 4. Handle viewer events
       handleViewerEvents(viewer);
     })
-    .catch(error => {
-      console.error('Error loading protein viewer:', error);
-      showErrorMessage('Failed to load protein viewer: ' + error.message);
-    });
 });
 
 /**
