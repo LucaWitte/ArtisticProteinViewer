@@ -3,8 +3,8 @@
  * Implements a standalone viewer that can be added to any webpage
  */
 
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js';
-import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.150.1/examples/jsm/controls/OrbitControls.js';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { WebGLDetector } from './utils/WebGLDetector.js';
 import { RendererFactory } from './app/RendererFactory.js';
 import { PDBLoader } from './loaders/PDBLoader.js';
@@ -70,6 +70,9 @@ export class ProteinViewer {
     
     // Visualization objects
     this.activeVisualization = null;
+    
+    // Event listeners
+    this.eventListeners = {};
     
     // Bind methods to ensure correct this context
     this._handleResize = this._handleResize.bind(this);
@@ -570,7 +573,7 @@ export class ProteinViewer {
     // Clear existing visualization
     this._clearVisualization();
     
-    // Create a visualization based on current style
+    // Create a visualization based on active style
     try {
       await this._updateVisualization();
     } catch (error) {
@@ -590,9 +593,15 @@ export class ProteinViewer {
     
     try {
       // Remove previous visualization if exists
-      this._clearVisualization();
+      if (this.activeVisualization) {
+        this.proteinGroup.remove(this.activeVisualization.object);
+        if (this.activeVisualization.dispose) {
+          this.activeVisualization.dispose();
+        }
+        this.activeVisualization = null;
+      }
       
-      // Import visualization dynamically only when needed
+      // Create new visualization based on style
       let VisualizationClass;
       
       switch (this.state.currentStyle) {
@@ -618,7 +627,7 @@ export class ProteinViewer {
       }
       
       // Create the visualization
-      const visualization = new VisualizationClass({
+      this.activeVisualization = new VisualizationClass({
         proteinModel: {
           atoms: this.protein.atoms,
           bonds: this.protein.bonds,
@@ -633,12 +642,11 @@ export class ProteinViewer {
       });
       
       // Create and add to scene
-      await visualization.create();
-      this.proteinGroup.add(visualization.object);
-      this.activeVisualization = visualization;
+      await this.activeVisualization.create();
+      this.proteinGroup.add(this.activeVisualization.object);
       
-      // Apply current effect strength
-      visualization.updateEffectStrength(this.state.effectStrength);
+      // Apply effect strength
+      this.activeVisualization.updateEffectStrength(this.state.effectStrength);
     } catch (error) {
       console.error('Error updating visualization:', error);
       this._createFallbackVisualization();
@@ -1089,4 +1097,338 @@ export class ProteinViewer {
    * @private
    */
   _hideError() {
-    if (th
+    if (this.errorDisplay) {
+      this.errorDisplay.style.display = 'none';
+    }
+  }
+  
+  /**
+   * Set the visualization style
+   * @param {string} style - Style name: 'ball-stick', 'ribbon', or 'surface'
+   * @returns {Promise<boolean>} Success status
+   */
+  async setStyle(style) {
+    if (!this.state.isInitialized || !this.rendererActive) {
+      return false;
+    }
+    
+    if (this.state.currentStyle === style) {
+      return true; // Already using this style
+    }
+    
+    // Valid styles
+    const validStyles = ['ball-stick', 'ribbon', 'surface'];
+    
+    if (!validStyles.includes(style)) {
+      console.warn(`Invalid style: ${style}. Using 'ball-stick' instead.`);
+      style = 'ball-stick';
+    }
+    
+    // Update state
+    this.state.currentStyle = style;
+    
+    // Update visualization if protein is loaded
+    if (this.protein) {
+      try {
+        await this._updateVisualization();
+        return true;
+      } catch (error) {
+        console.error('Error changing visualization style:', error);
+        return false;
+      }
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Set the shader type
+   * @param {string} shader - Shader name: 'standard', 'toon', 'glow', or 'outline'
+   * @returns {boolean} Success status
+   */
+  setShader(shader) {
+    if (!this.state.isInitialized || !this.rendererActive) {
+      return false;
+    }
+    
+    if (this.state.currentShader === shader) {
+      return true; // Already using this shader
+    }
+    
+    // Valid shaders
+    const validShaders = ['standard', 'toon', 'glow', 'outline'];
+    
+    if (!validShaders.includes(shader)) {
+      console.warn(`Invalid shader: ${shader}. Using 'standard' instead.`);
+      shader = 'standard';
+    }
+    
+    // Update state
+    this.state.currentShader = shader;
+    
+    // Update shader if initialized
+    if (this.shader) {
+      try {
+        this.shader.setType(shader);
+        
+        // Update visualization if protein is loaded
+        if (this.activeVisualization) {
+          this.activeVisualization.updateShader(this.shader);
+          this.activeVisualization.updateEffectStrength(this.state.effectStrength);
+        }
+        
+        return true;
+      } catch (error) {
+        console.error('Error changing shader:', error);
+        return false;
+      }
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Set effect strength
+   * @param {number} strength - Effect strength (0.0 - 1.0)
+   * @returns {boolean} Success status
+   */
+  setEffectStrength(strength) {
+    if (!this.state.isInitialized || !this.rendererActive) {
+      return false;
+    }
+    
+    // Clamp to valid range
+    strength = Math.max(0, Math.min(1, strength));
+    
+    // Update state
+    this.state.effectStrength = strength;
+    
+    // Update visualization if active
+    if (this.activeVisualization) {
+      try {
+        this.activeVisualization.updateEffectStrength(strength);
+        return true;
+      } catch (error) {
+        console.error('Error changing effect strength:', error);
+        return false;
+      }
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Set background color
+   * @param {string} color - Background color
+   * @returns {boolean} Success status
+   */
+  setBackgroundColor(color) {
+    if (!this.state.isInitialized || !this.rendererActive) {
+      return false;
+    }
+    
+    try {
+      // Update renderer clear color
+      this.renderer.setClearColor(new THREE.Color(color), 1.0);
+      
+      // Update scene background
+      if (this.scene) {
+        this.scene.background = new THREE.Color(color);
+      }
+      
+      // Store in config
+      this.config.backgroundColor = color;
+      
+      return true;
+    } catch (error) {
+      console.error('Error changing background color:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Take a screenshot of the current view
+   * @param {Object} [options] - Screenshot options
+   * @param {number} [options.width] - Width of screenshot
+   * @param {number} [options.height] - Height of screenshot
+   * @param {number} [options.scale=2] - Scale factor
+   * @returns {string|null} Data URL of the screenshot or null if failed
+   */
+  takeScreenshot(options = {}) {
+    if (!this.state.isInitialized || !this.rendererActive) {
+      console.warn('Cannot take screenshot: viewer not initialized or inactive');
+      return null;
+    }
+    
+    try {
+      // Get current size
+      const currentSize = {
+        width: this.canvas.width,
+        height: this.canvas.height
+      };
+      
+      // Calculate screenshot size
+      const width = options.width || currentSize.width;
+      const height = options.height || currentSize.height;
+      const scale = options.scale || 2;
+      
+      // Resize renderer temporarily
+      const targetWidth = options.width || (currentSize.width * scale);
+      const targetHeight = options.height || (currentSize.height * scale);
+      
+      this.renderer.setSize(targetWidth, targetHeight, false);
+      
+      // Render scene
+      this.renderer.render(this.scene, this.camera);
+      
+      // Get image data
+      const imageDataURL = this.renderer.domElement.toDataURL('image/png');
+      
+      // Restore original size
+      this.renderer.setSize(currentSize.width, currentSize.height, false);
+      
+      // Render at original size
+      this.renderer.render(this.scene, this.camera);
+      
+      return imageDataURL;
+    } catch (error) {
+      console.error('Error taking screenshot:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Register an event listener
+   * @param {string} event - Event name
+   * @param {Function} callback - Event callback
+   */
+  on(event, callback) {
+    if (!this.eventListeners[event]) {
+      this.eventListeners[event] = [];
+    }
+    
+    this.eventListeners[event].push(callback);
+  }
+  
+  /**
+   * Remove an event listener
+   * @param {string} event - Event name
+   * @param {Function} callback - Event callback
+   */
+  off(event, callback) {
+    if (!this.eventListeners[event]) {
+      return;
+    }
+    
+    this.eventListeners[event] = this.eventListeners[event].filter(cb => cb !== callback);
+  }
+  
+  /**
+   * Emit an event
+   * @private
+   * @param {string} event - Event name
+   * @param {Object} [data] - Event data
+   */
+  _emitEvent(event, data = {}) {
+    if (!this.eventListeners[event]) {
+      return;
+    }
+    
+    const eventObject = { type: event, detail: data };
+    
+    this.eventListeners[event].forEach(callback => {
+      try {
+        callback(eventObject);
+      } catch (error) {
+        console.error(`Error in ${event} event handler:`, error);
+      }
+    });
+  }
+  
+  /**
+   * Reset the camera view to show the entire protein
+   * @returns {boolean} Success status
+   */
+  resetView() {
+    if (!this.state.isInitialized || !this.rendererActive || !this.protein) {
+      return false;
+    }
+    
+    try {
+      this._centerCamera();
+      return true;
+    } catch (error) {
+      console.error('Error resetting view:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Get the current state of the viewer
+   * @returns {Object} Viewer state
+   */
+  getState() {
+    return {
+      isInitialized: this.state.isInitialized,
+      isLoading: this.state.isLoading,
+      isReady: this.state.isReady,
+      currentStyle: this.state.currentStyle,
+      currentShader: this.state.currentShader,
+      effectStrength: this.state.effectStrength,
+      hasContextLoss: this.state.hasContextLoss
+    };
+  }
+  
+  /**
+   * Dispose of viewer resources
+   */
+  dispose() {
+    // Stop animation
+    this._stopAnimationLoop();
+    
+    // Remove event listeners
+    window.removeEventListener('resize', this._handleResize);
+    document.removeEventListener('visibilitychange', this._handleVisibilityChange);
+    
+    // Stop visibility observer
+    if (this.visibilityObserver) {
+      this.visibilityObserver.disconnect();
+    }
+    
+    // Clear protein
+    this._clearProtein();
+    
+    // Dispose of Three.js resources
+    if (this.controls) {
+      this.controls.dispose();
+    }
+    
+    if (this.shader) {
+      this.shader.dispose();
+    }
+    
+    if (this.renderer) {
+      this.renderer.dispose();
+    }
+    
+    // Remove error display
+    if (this.errorDisplay && this.errorDisplay.parentNode) {
+      this.errorDisplay.parentNode.removeChild(this.errorDisplay);
+    }
+    
+    // Clear event listeners
+    this.eventListeners = {};
+    
+    // Clear references
+    this.scene = null;
+    this.camera = null;
+    this.controls = null;
+    this.renderer = null;
+    this.protein = null;
+    this.shader = null;
+    this.activeVisualization = null;
+    this.fallbackVisualization = null;
+    
+    console.log('ProteinViewer disposed');
+  }
+}
