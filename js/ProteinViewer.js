@@ -4,7 +4,7 @@
  */
 
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.150.1/examples/jsm/controls/OrbitControls.js';
 import { WebGLDetector } from './utils/WebGLDetector.js';
 import { RendererFactory } from './app/RendererFactory.js';
 import { PDBLoader } from './loaders/PDBLoader.js';
